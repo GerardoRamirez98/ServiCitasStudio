@@ -13,7 +13,10 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "Permite seleccionar el logo del negocio para mostrarlo en la app."
+      }
     },
     "android": {
       "adaptiveIcon": {
