@@ -1,3 +1,4 @@
+import Constants from 'expo-constants';
 import * as Notifications from 'expo-notifications';
 import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { runtimeFeatures } from '../config/features';
@@ -6,6 +7,7 @@ import { UserProfile } from '../types';
 
 export async function registerPushToken(profile: UserProfile) {
   if (!runtimeFeatures.firebaseFunctions) return null;
+  if (Constants.appOwnership === 'expo') return null;
 
   const permission = await Notifications.getPermissionsAsync();
   const finalPermission = permission.granted ? permission : await Notifications.requestPermissionsAsync();
