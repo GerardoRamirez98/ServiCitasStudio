@@ -1,10 +1,8 @@
 import { Ionicons } from '@expo/vector-icons';
-import { addDoc, collection, serverTimestamp } from 'firebase/firestore';
 import { useEffect, useMemo, useState } from 'react';
 import { Alert, Modal, Pressable, ScrollView, Text, View } from 'react-native';
-import { db } from '../firebase';
+import { createAppointment } from '../services/appointments';
 import { readableFirebaseError } from '../services/errors';
-import { orgPath } from '../services/paths';
 import { theme } from '../theme';
 import { useBrandColors } from '../theme-context';
 import { Appointment, BusinessSettings, DayNote, Employee, Service } from '../types';
@@ -121,24 +119,20 @@ export function ManualAppointmentModal({
     }
 
     try {
-      await addDoc(collection(db, orgPath(organizationId, 'appointments')), {
+      await createAppointment({
+        organizationId,
         clientId: 'manual',
         clientName: clientName.trim(),
         date: selectedDate,
         time: selectedTime,
-        endTime: addMinutes(selectedTime, effectiveDuration),
         duration: effectiveDuration,
         serviceIds: selectedServiceIds,
         employeeId: selectedEmployeeId,
-        status: 'confirmed',
         note: note.trim() || 'Cita creada manualmente en mostrador.',
         deposit: 0,
         requiresDeposit: false,
         depositPercent: 0,
-        paymentStatus: 'offline',
         paymentMethod: 'cash',
-        paymentProvider: 'none',
-        refundStatus: 'not_applicable',
         subtotal: total,
         specialPrice: specialPrice.trim() ? finalTotal : null,
         discountAmount,
@@ -146,7 +140,6 @@ export function ManualAppointmentModal({
         total: finalTotal,
         termsAccepted: true,
         source: 'manual',
-        createdAt: serverTimestamp(),
       });
       setClientName('');
       setNote('');

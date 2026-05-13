@@ -6,11 +6,14 @@ import { auth } from '../firebase';
 import { useOrganizationData } from '../hooks/useOrganizationData';
 import { getAppearancePalette, theme } from '../theme';
 import { BrandThemeProvider, useBrandColors } from '../theme-context';
-import { UserProfile } from '../types';
+import { UserProfile, UserRole } from '../types';
 import { IconButton } from './ui';
 
-const roleLabels = {
+const roleLabels: Record<UserRole, string> = {
   admin: 'Administrador',
+  owner: 'Dueno',
+  manager: 'Gerente',
+  receptionist: 'Recepcion',
   employee: 'Empleado',
   client: 'Cliente',
 };

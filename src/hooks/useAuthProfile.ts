@@ -3,7 +3,9 @@ import type { User } from 'firebase/auth';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
 import { auth, db } from '../firebase';
-import { UserProfile } from '../types';
+import { UserProfile, UserRole } from '../types';
+
+const allowedRoles: UserRole[] = ['client', 'employee', 'receptionist', 'manager', 'admin', 'owner'];
 
 export function useAuthProfile() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
@@ -41,7 +43,7 @@ export function useAuthProfile() {
           id: user.uid,
           name: String(data.name ?? user.email ?? 'Usuario'),
           email: String(data.email ?? user.email ?? ''),
-          role: data.role === 'admin' || data.role === 'employee' ? data.role : 'client',
+          role: allowedRoles.includes(data.role) ? data.role : 'client',
           organizationId: String(data.organizationId ?? ''),
           organizationName: String(data.organizationName ?? 'Mi organizacion'),
           employeeId: data.employeeId ? String(data.employeeId) : undefined,

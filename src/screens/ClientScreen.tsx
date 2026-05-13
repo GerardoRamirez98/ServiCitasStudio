@@ -1,11 +1,12 @@
 import { Ionicons } from '@expo/vector-icons';
-import { addDoc, collection, doc, serverTimestamp, updateDoc } from 'firebase/firestore';
+import { doc, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { useEffect, useMemo, useState } from 'react';
 import { Alert, Image, Linking, Modal, Pressable, ScrollView, Text, View } from 'react-native';
 import { AppointmentCard } from '../components/AppointmentCard';
 import { runtimeFeatures } from '../config/features';
 import { db } from '../firebase';
 import { useOrganizationData } from '../hooks/useOrganizationData';
+import { createAppointment } from '../services/appointments';
 import { readableFirebaseError } from '../services/errors';
 import { createDepositPreference } from '../services/payments';
 import { orgPath } from '../services/paths';
@@ -144,35 +145,27 @@ export function ClientScreen({ profile }: { profile: UserProfile }) {
       automaticPaymentsEnabled || ['transfer', 'cash'].includes(depositPaymentMethod) ? depositPaymentMethod : 'transfer';
 
     try {
-      const appointmentRef = await addDoc(collection(db, orgPath(profile.organizationId, 'appointments')), {
+      const appointment = await createAppointment({
+        organizationId: profile.organizationId,
         clientId: profile.id,
         clientName: profile.name,
         date: selectedDate,
         time: selectedTime,
-        endTime: addMinutes(selectedTime, effectiveDuration),
         duration: effectiveDuration,
         serviceIds: selectedServiceIds,
         employeeId: assignedEmployee.id,
-        status: 'pending',
         note: clientNote.trim() || 'Sin nota.',
         deposit,
         requiresDeposit,
         depositPercent: requiresDeposit ? safeDepositPercent : 0,
-        paymentStatus: requiresDeposit && deposit > 0 ? 'pending' : 'not_required',
         paymentMethod: requiresDeposit && deposit > 0 ? effectiveDepositPaymentMethod : 'none',
         requestedDepositPaymentMethod: requiresDeposit && deposit > 0 ? effectiveDepositPaymentMethod : 'none',
-        paymentProvider:
-          requiresDeposit && deposit > 0 && automaticPaymentsEnabled && !['transfer', 'cash'].includes(effectiveDepositPaymentMethod)
-            ? 'mercado_pago'
-            : 'none',
         total: selectedTotal,
         termsAccepted: true,
-        serviceRightForfeited: false,
         source: 'client',
-        createdAt: serverTimestamp(),
       });
       if (requiresDeposit && deposit > 0 && automaticPaymentsEnabled && !['transfer', 'cash'].includes(effectiveDepositPaymentMethod)) {
-        const preference = await createDepositPreference(profile.organizationId, appointmentRef.id);
+        const preference = await createDepositPreference(profile.organizationId, appointment.appointmentId);
         if (preference.checkoutUrl) {
           await Linking.openURL(preference.checkoutUrl);
         }

@@ -12,6 +12,7 @@ import { noBlazeMessage, runtimeFeatures } from '../config/features';
 import { db, storage } from '../firebase';
 import { useOrganizationData } from '../hooks/useOrganizationData';
 import { readableFirebaseError } from '../services/errors';
+import { buildPaymentSummary } from '../services/finance';
 import { createPublicOrganizationCode } from '../services/organizations';
 import { createMercadoPagoOAuthUrl, disconnectMercadoPago } from '../services/payments';
 import { orgPath } from '../services/paths';
@@ -730,6 +731,8 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
       {tab === 'payments' ? (
         <PaymentsForm
           connection={mercadoPagoConnection}
+          appointments={appointments}
+          services={services}
           backendEnabled={runtimeFeatures.firebaseFunctions && runtimeFeatures.mercadoPagoCheckout}
           onConnect={connectMercadoPago}
           onDisconnect={confirmDisconnectMercadoPago}
@@ -1102,18 +1105,46 @@ function AppearanceForm({
 
 function PaymentsForm({
   connection,
+  appointments,
+  services,
   backendEnabled,
   onConnect,
   onDisconnect,
 }: {
   connection: MercadoPagoConnectionStatus;
+  appointments: Appointment[];
+  services: Service[];
   backendEnabled: boolean;
   onConnect: () => void;
   onDisconnect: () => void;
 }) {
   const brandColors = useBrandColors();
+  const summary = useMemo(() => buildPaymentSummary(appointments, services), [appointments, services]);
   return (
-    <Section title="Pagos con Mercado Pago" icon="wallet-outline">
+    <Section title="Panel financiero" icon="wallet-outline">
+      <View style={theme.styles.statGrid}>
+        <StatCard label="Ingresos" value={`$${summary.totalRevenue}`} helper="Servicios completados o pagados" />
+        <StatCard label="Anticipos" value={`$${summary.deposits}`} helper="Anticipos confirmados" />
+        <StatCard label="Pendiente" value={`$${summary.pendingPayments}`} helper="Por cobrar" />
+        <StatCard label="Comisiones" value={`$${summary.fees}`} helper="Marketplace / pasarela" />
+      </View>
+      <View style={theme.styles.card}>
+        <Text style={theme.styles.sectionTitle}>Metodos de pago</Text>
+        <Text style={theme.styles.mutedText}>Efectivo: ${summary.cash} · Transferencia: ${summary.transfer}</Text>
+        <Text style={theme.styles.mutedText}>Mercado Pago: ${summary.mercadoPago} · SPEI: ${summary.spei} · OXXO: ${summary.oxxo}</Text>
+      </View>
+      <View style={theme.styles.card}>
+        <Text style={theme.styles.sectionTitle}>Ingresos por servicio</Text>
+        {Object.entries(summary.byService).length ? (
+          Object.entries(summary.byService).map(([service, amount]) => (
+            <Text key={service} style={theme.styles.mutedText}>{service}: ${Math.round(amount)}</Text>
+          ))
+        ) : (
+          <EmptyState text="Aun no hay servicios pagados en el periodo cargado." />
+        )}
+      </View>
+
+      <Text style={theme.styles.sectionTitle}>Mercado Pago Marketplace</Text>
       {!backendEnabled ? (
         <View style={[theme.styles.card, { borderColor: brandColors.accent }]}>
           <Text style={[theme.styles.eyebrow, { color: brandColors.primary }]}>Modo sin Blaze</Text>

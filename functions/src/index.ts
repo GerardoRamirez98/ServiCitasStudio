@@ -3,6 +3,7 @@ import { initializeApp } from 'firebase-admin/app';
 import { FieldValue, Timestamp, getFirestore } from 'firebase-admin/firestore';
 import { logger } from 'firebase-functions';
 import { defineSecret, defineString } from 'firebase-functions/params';
+import { onDocumentCreated, onDocumentUpdated } from 'firebase-functions/v2/firestore';
 import { HttpsError, onCall, onRequest } from 'firebase-functions/v2/https';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 
@@ -24,6 +25,32 @@ type UserProfile = {
   role?: string;
   organizationId?: string;
   email?: string;
+  name?: string;
+  employeeId?: string;
+};
+
+type CreateAppointmentInput = {
+  organizationId?: string;
+  clientId?: string;
+  clientName?: string;
+  date?: string;
+  time?: string;
+  duration?: number;
+  serviceIds?: string[];
+  employeeId?: string;
+  note?: string;
+  source?: 'client' | 'manual';
+  total?: number;
+  subtotal?: number;
+  deposit?: number;
+  requiresDeposit?: boolean;
+  depositPercent?: number;
+  paymentMethod?: string;
+  requestedDepositPaymentMethod?: string;
+  specialPrice?: number | null;
+  discountAmount?: number;
+  discountReason?: string;
+  termsAccepted?: boolean;
 };
 
 type MercadoPagoTokenResponse = {
@@ -83,8 +110,23 @@ async function requireUser(uid: string) {
 
 async function requireOrganizationAdmin(uid: string, organizationId: string) {
   const profile = await requireUser(uid);
-  if (profile.role !== 'admin' || profile.organizationId !== organizationId) {
+  if (!['owner', 'admin'].includes(profile.role ?? '') || profile.organizationId !== organizationId) {
     throw new HttpsError('permission-denied', 'Solo un administrador de este negocio puede realizar esta accion.');
+  }
+  return profile;
+}
+
+async function requireAppointmentWriter(uid: string, organizationId: string, source: string) {
+  const profile = await requireUser(uid);
+  if (profile.organizationId !== organizationId) {
+    throw new HttpsError('permission-denied', 'El usuario no pertenece a este negocio.');
+  }
+  const manualRoles = ['owner', 'admin', 'manager', 'receptionist', 'employee'];
+  if (source === 'manual' && !manualRoles.includes(profile.role ?? '')) {
+    throw new HttpsError('permission-denied', 'No tienes permisos para crear citas manuales.');
+  }
+  if (source === 'client' && profile.role !== 'client') {
+    throw new HttpsError('permission-denied', 'Solo clientes pueden crear esta solicitud.');
   }
   return profile;
 }
@@ -116,6 +158,174 @@ function calculateMarketplaceFee(amount: number) {
   const fee = Math.round((amount * (percent / 100) + fixed) * 100) / 100;
   return Math.min(amount, fee);
 }
+
+function parseTime(value: string) {
+  const match = /^(\d{2}):(\d{2})$/.exec(value);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
+  return hours * 60 + minutes;
+}
+
+function addMinutes(time: string, minutesToAdd: number) {
+  const start = parseTime(time);
+  if (start === null) return time;
+  const value = start + minutesToAdd;
+  const hours = Math.floor(value / 60);
+  const minutes = value % 60;
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+}
+
+function overlaps(startA: number, endA: number, startB: number, endB: number) {
+  return startA < endB && endA > startB;
+}
+
+function validateCreateAppointmentInput(data: CreateAppointmentInput) {
+  const organizationId = String(data.organizationId ?? '');
+  const source = data.source ?? 'client';
+  const date = String(data.date ?? '');
+  const time = String(data.time ?? '');
+  const duration = Number(data.duration ?? 0);
+  const serviceIds = Array.isArray(data.serviceIds) ? data.serviceIds.map(String).filter(Boolean) : [];
+  const total = Number(data.total ?? 0);
+
+  if (!organizationId) throw new HttpsError('invalid-argument', 'Falta organizationId.');
+  if (!['client', 'manual'].includes(source)) throw new HttpsError('invalid-argument', 'Origen de cita invalido.');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new HttpsError('invalid-argument', 'Fecha invalida.');
+  if (parseTime(time) === null) throw new HttpsError('invalid-argument', 'Hora invalida.');
+  if (!Number.isFinite(duration) || duration <= 0 || duration > 24 * 60) throw new HttpsError('invalid-argument', 'Duracion invalida.');
+  if (!serviceIds.length) throw new HttpsError('invalid-argument', 'Selecciona al menos un servicio.');
+  if (!String(data.clientName ?? '').trim()) throw new HttpsError('invalid-argument', 'Falta nombre del cliente.');
+  if (!Number.isFinite(total) || total < 0) throw new HttpsError('invalid-argument', 'Total invalido.');
+  if (!data.termsAccepted) throw new HttpsError('failed-precondition', 'Debes aceptar los terminos de la cita.');
+
+  return { organizationId, source, date, time, duration, serviceIds, total };
+}
+
+async function collectPushTokens(userIds: string[]) {
+  const uniqueUserIds = [...new Set(userIds.filter(Boolean))];
+  const tokenSnapshots = await Promise.all(uniqueUserIds.map((uid) => db.collection(`users/${uid}/pushTokens`).get()));
+  return tokenSnapshots.flatMap((snapshot) => snapshot.docs.map((docSnapshot) => String(docSnapshot.data().token ?? '')).filter(Boolean));
+}
+
+async function sendExpoPush(tokens: string[], title: string, body: string, data: Record<string, string>) {
+  if (!tokens.length) return;
+  const messages = tokens.map((to) => ({ to, title, body, data, sound: 'default' }));
+  const response = await fetch('https://exp.host/--/api/v2/push/send', {
+    method: 'POST',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify(messages),
+  });
+  if (!response.ok) {
+    logger.warn('Expo push respondio con error', { status: response.status, body: await response.text().catch(() => '') });
+  }
+}
+
+async function organizationAdminUserIds(organizationId: string) {
+  const snapshot = await db
+    .collection('users')
+    .where('organizationId', '==', organizationId)
+    .where('role', 'in', ['owner', 'admin', 'manager'])
+    .get();
+  return snapshot.docs.map((docSnapshot) => docSnapshot.id);
+}
+
+export const createAppointment = onCall({ region }, async (request) => {
+  if (!request.auth?.uid) {
+    throw new HttpsError('unauthenticated', 'Inicia sesion para crear una cita.');
+  }
+  const uid = request.auth.uid;
+
+  const data = request.data as CreateAppointmentInput;
+  const normalized = validateCreateAppointmentInput(data);
+  const profile = await requireAppointmentWriter(uid, normalized.organizationId, normalized.source);
+  const requestedEmployeeId = String(data.employeeId ?? '');
+  const requestedStart = parseTime(normalized.time);
+  if (requestedStart === null) throw new HttpsError('invalid-argument', 'Hora invalida.');
+  const requestedEnd = requestedStart + normalized.duration;
+
+  const appointmentRef = db.collection(`organizations/${normalized.organizationId}/appointments`).doc();
+  const result = await db.runTransaction(async (transaction) => {
+    const employeesQuery = db
+      .collection(`organizations/${normalized.organizationId}/employees`)
+      .where('active', '==', true);
+    const employeesSnapshot = await transaction.get(employeesQuery);
+    const employeeIds = employeesSnapshot.docs.map((docSnapshot) => docSnapshot.id).filter((id) => !requestedEmployeeId || id === requestedEmployeeId);
+    if (!employeeIds.length) {
+      throw new HttpsError('failed-precondition', 'No hay empleados activos disponibles.');
+    }
+
+    const appointmentsQuery = requestedEmployeeId
+      ? db
+          .collection(`organizations/${normalized.organizationId}/appointments`)
+          .where('date', '==', normalized.date)
+          .where('employeeId', '==', requestedEmployeeId)
+      : db.collection(`organizations/${normalized.organizationId}/appointments`).where('date', '==', normalized.date);
+    const appointmentsSnapshot = await transaction.get(appointmentsQuery);
+    const busyEmployeeIds = new Set<string>();
+    appointmentsSnapshot.docs.forEach((docSnapshot) => {
+      const appointment = docSnapshot.data();
+      if (['completed', 'lost', 'cancelled'].includes(String(appointment.status ?? ''))) return;
+      const start = parseTime(String(appointment.time ?? ''));
+      const duration = Number(appointment.duration ?? 60);
+      if (start === null || !Number.isFinite(duration)) return;
+      if (overlaps(requestedStart, requestedEnd, start, start + duration)) {
+        busyEmployeeIds.add(String(appointment.employeeId ?? ''));
+      }
+    });
+
+    const assignedEmployeeId = requestedEmployeeId || employeeIds.find((id) => !busyEmployeeIds.has(id));
+    if (!assignedEmployeeId || busyEmployeeIds.has(assignedEmployeeId)) {
+      throw new HttpsError('already-exists', 'Ese horario acaba de ocuparse. Selecciona otro disponible.');
+    }
+
+    const requiresDeposit = Boolean(data.requiresDeposit);
+    const deposit = Math.max(0, Number(data.deposit ?? 0));
+    const paymentMethod = String(data.paymentMethod ?? 'none');
+    const automaticMp = requiresDeposit && deposit > 0 && !['transfer', 'cash', 'none'].includes(paymentMethod);
+
+    transaction.set(appointmentRef, {
+      clientId: normalized.source === 'client' ? uid : String(data.clientId ?? 'manual'),
+      clientName: String(data.clientName ?? profile.name ?? '').trim(),
+      date: normalized.date,
+      time: normalized.time,
+      endTime: addMinutes(normalized.time, normalized.duration),
+      duration: normalized.duration,
+      serviceIds: normalized.serviceIds,
+      employeeId: assignedEmployeeId,
+      status: normalized.source === 'manual' ? 'confirmed' : 'pending',
+      note: String(data.note ?? '').trim() || (normalized.source === 'manual' ? 'Cita creada manualmente.' : 'Sin nota.'),
+      deposit,
+      requiresDeposit,
+      depositPercent: requiresDeposit ? Number(data.depositPercent ?? 0) : 0,
+      paymentStatus: requiresDeposit && deposit > 0 ? 'pending' : normalized.source === 'manual' ? 'offline' : 'not_required',
+      paymentMethod: requiresDeposit && deposit > 0 ? paymentMethod : normalized.source === 'manual' ? 'cash' : 'none',
+      requestedDepositPaymentMethod: data.requestedDepositPaymentMethod ?? paymentMethod,
+      paymentProvider: automaticMp ? 'mercado_pago' : 'none',
+      refundStatus: 'not_applicable',
+      subtotal: Number(data.subtotal ?? normalized.total),
+      specialPrice: data.specialPrice ?? null,
+      discountAmount: Number(data.discountAmount ?? 0),
+      discountReason: String(data.discountReason ?? ''),
+      total: normalized.total,
+      termsAccepted: true,
+      serviceRightForfeited: false,
+      source: normalized.source,
+      createdBy: uid,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+
+    return { appointmentId: appointmentRef.id, employeeId: assignedEmployeeId };
+  });
+
+  logger.info('Cita creada atomicamente', { organizationId: normalized.organizationId, appointmentId: result.appointmentId });
+  return result;
+});
 
 function privateConnectionRef(organizationId: string) {
   return db.doc(`organizations/${organizationId}/private/mercadopago`);
@@ -561,6 +771,119 @@ export const refreshMercadoPagoTokens = onSchedule({ region, schedule: 'every 24
       } catch (error) {
         logger.error('No se pudo renovar token Mercado Pago', { organizationId, error });
       }
+    }),
+  );
+});
+
+export const notifyAppointmentCreated = onDocumentCreated(
+  { region, document: 'organizations/{organizationId}/appointments/{appointmentId}' },
+  async (event) => {
+    const appointment = event.data?.data();
+    if (!appointment) return;
+    const organizationId = String(event.params.organizationId);
+    const appointmentId = String(event.params.appointmentId);
+    const employeeId = String(appointment.employeeId ?? '');
+    const clientId = String(appointment.clientId ?? '');
+    const employeeSnapshot = employeeId ? await db.doc(`organizations/${organizationId}/employees/${employeeId}`).get() : null;
+    const employeeUserId = String(employeeSnapshot?.data()?.userId ?? '');
+    const adminIds = await organizationAdminUserIds(organizationId);
+
+    const adminTokens = await collectPushTokens(adminIds);
+    await sendExpoPush(adminTokens, 'Nueva cita', `${appointment.clientName ?? 'Cliente'} agendo para ${appointment.date} ${appointment.time}.`, {
+      organizationId,
+      appointmentId,
+      type: 'admin_new_appointment',
+    });
+
+    const employeeTokens = await collectPushTokens([employeeUserId]);
+    await sendExpoPush(employeeTokens, 'Nueva cita asignada', `${appointment.clientName ?? 'Cliente'} te fue asignado el ${appointment.date} a las ${appointment.time}.`, {
+      organizationId,
+      appointmentId,
+      type: 'employee_new_appointment',
+    });
+
+    const clientTokens = await collectPushTokens([clientId]);
+    await sendExpoPush(clientTokens, 'Cita recibida', `Tu cita para ${appointment.date} ${appointment.time} quedo en revision.`, {
+      organizationId,
+      appointmentId,
+      type: 'client_appointment_created',
+    });
+  },
+);
+
+export const notifyAppointmentUpdated = onDocumentUpdated(
+  { region, document: 'organizations/{organizationId}/appointments/{appointmentId}' },
+  async (event) => {
+    const before = event.data?.before.data();
+    const after = event.data?.after.data();
+    if (!before || !after) return;
+    const organizationId = String(event.params.organizationId);
+    const appointmentId = String(event.params.appointmentId);
+    const clientId = String(after.clientId ?? '');
+    const employeeId = String(after.employeeId ?? '');
+    const employeeSnapshot = employeeId ? await db.doc(`organizations/${organizationId}/employees/${employeeId}`).get() : null;
+    const employeeUserId = String(employeeSnapshot?.data()?.userId ?? '');
+
+    if (before.status !== after.status) {
+      if (after.status === 'confirmed') {
+        await sendExpoPush(await collectPushTokens([clientId]), 'Cita confirmada', `Tu cita del ${after.date} a las ${after.time} fue confirmada.`, {
+          organizationId,
+          appointmentId,
+          type: 'client_appointment_confirmed',
+        });
+      }
+      if (after.status === 'cancelled') {
+        const tokens = await collectPushTokens([clientId, employeeUserId, ...(await organizationAdminUserIds(organizationId))]);
+        await sendExpoPush(tokens, 'Cita cancelada', `La cita de ${after.clientName ?? 'cliente'} fue cancelada.`, {
+          organizationId,
+          appointmentId,
+          type: 'appointment_cancelled',
+        });
+      }
+      if (after.status === 'waiting' && after.delayNotice) {
+        await sendExpoPush(await collectPushTokens([clientId]), 'Aviso de demora', String(after.delayNotice), {
+          organizationId,
+          appointmentId,
+          type: 'client_delay_notice',
+        });
+      }
+    }
+
+    if (before.time !== after.time || before.employeeId !== after.employeeId) {
+      const tokens = await collectPushTokens([clientId, employeeUserId]);
+      await sendExpoPush(tokens, 'Cambio de horario', `Tu cita ahora esta para ${after.date} ${after.time}.`, {
+        organizationId,
+        appointmentId,
+        type: 'appointment_rescheduled',
+      });
+    }
+
+    if (before.paymentStatus !== after.paymentStatus && after.paymentStatus === 'paid') {
+      const tokens = await collectPushTokens([clientId, ...(await organizationAdminUserIds(organizationId))]);
+      await sendExpoPush(tokens, 'Anticipo confirmado', `Se confirmo el anticipo de ${after.clientName ?? 'la cita'}.`, {
+        organizationId,
+        appointmentId,
+        type: 'deposit_confirmed',
+      });
+    }
+  },
+);
+
+export const appointmentReminders = onSchedule({ region, schedule: 'every 15 minutes' }, async () => {
+  const now = Date.now();
+  const inOneHour = new Date(now + 60 * 60 * 1000);
+  const date = inOneHour.toISOString().slice(0, 10);
+  const hour = inOneHour.toISOString().slice(11, 16);
+  const snapshot = await db.collectionGroup('appointments').where('date', '==', date).where('time', '==', hour).get();
+
+  await Promise.all(
+    snapshot.docs.map(async (docSnapshot) => {
+      const appointment = docSnapshot.data();
+      if (['cancelled', 'completed', 'lost'].includes(String(appointment.status ?? ''))) return;
+      await sendExpoPush(await collectPushTokens([String(appointment.clientId ?? '')]), 'Recordatorio de cita', `Tu cita inicia a las ${appointment.time}.`, {
+        appointmentId: docSnapshot.id,
+        type: 'client_appointment_reminder',
+      });
     }),
   );
 });

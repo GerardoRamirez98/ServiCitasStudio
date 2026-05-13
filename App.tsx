@@ -8,7 +8,9 @@ import { AuthScreen } from './src/screens/AuthScreen';
 import { ClientScreen } from './src/screens/ClientScreen';
 import { EmployeeScreen } from './src/screens/EmployeeScreen';
 import { ProfileRecoveryScreen } from './src/screens/ProfileRecoveryScreen';
+import { registerPushToken } from './src/services/notifications';
 import { theme } from './src/theme';
+import { useEffect } from 'react';
 
 export default function App() {
   return (
@@ -20,6 +22,11 @@ export default function App() {
 
 function AppContent() {
   const { profile, authUser, missingProfile, loading } = useAuthProfile();
+
+  useEffect(() => {
+    if (!profile) return;
+    registerPushToken(profile).catch(() => undefined);
+  }, [profile]);
 
   if (loading) {
     return (
@@ -40,7 +47,7 @@ function AppContent() {
 
   return (
     <AppShell profile={profile}>
-      {profile.role === 'admin' ? <AdminScreen profile={profile} /> : null}
+      {['owner', 'admin', 'manager', 'receptionist'].includes(profile.role) ? <AdminScreen profile={profile} /> : null}
       {profile.role === 'employee' ? <EmployeeScreen profile={profile} /> : null}
       {profile.role === 'client' ? <ClientScreen profile={profile} /> : null}
     </AppShell>

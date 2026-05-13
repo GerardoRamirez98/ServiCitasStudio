@@ -1,5 +1,6 @@
-export type UserRole = 'client' | 'employee' | 'admin';
+export type UserRole = 'client' | 'employee' | 'receptionist' | 'manager' | 'admin' | 'owner';
 export type AppearancePreset = 'studio' | 'barber' | 'salon' | 'clinic' | 'minimal';
+export type StaffRole = Extract<UserRole, 'employee' | 'receptionist' | 'manager' | 'admin' | 'owner'>;
 
 export type UserProfile = {
   id: string;
@@ -36,6 +37,16 @@ export type Service = {
   price: number;
   duration: number;
   active: boolean;
+  categoryId?: string;
+  employeeDurations?: Record<string, number>;
+};
+
+export type ServiceCategory = {
+  id: string;
+  name: string;
+  slug: string;
+  active: boolean;
+  sortOrder?: number;
 };
 
 export type Employee = {
@@ -49,6 +60,19 @@ export type Employee = {
   compensationMode?: CompensationMode;
   fixedSalary?: number;
   commissionPercent?: number;
+  serviceDurations?: Record<string, number>;
+  scheduleOverrides?: Record<string, { start: string; end: string; breakStart?: string; breakEnd?: string }>;
+};
+
+export type EmployeeBlockType = 'vacation' | 'sick_leave' | 'meal' | 'permission' | 'custom_schedule';
+
+export type EmployeeBlock = {
+  id: string;
+  employeeId: string;
+  type: EmployeeBlockType;
+  startsAt: string;
+  endsAt: string;
+  note?: string;
 };
 
 export type AppointmentStatus = 'pending' | 'confirmed' | 'waiting' | 'in_service' | 'completed' | 'lost' | 'cancelled';
@@ -101,6 +125,62 @@ export type Appointment = {
   servicePaymentStatus?: 'pending' | 'paid';
   servicePaidAt?: unknown;
   source?: 'client' | 'manual';
+  promotionId?: string;
+  categoryIds?: string[];
+};
+
+export type PromotionDiscountType = 'percent' | 'fixed';
+
+export type Promotion = {
+  id: string;
+  title: string;
+  description?: string;
+  active: boolean;
+  startsAt: string;
+  endsAt: string;
+  discountType: PromotionDiscountType;
+  discountValue: number;
+  serviceIds: string[];
+};
+
+export type PortfolioItem = {
+  id: string;
+  title: string;
+  description?: string;
+  categoryId?: string;
+  employeeId?: string;
+  imageUrl: string;
+  createdAt?: unknown;
+};
+
+export type ClientRewardLevel = 'bronze' | 'silver' | 'gold' | 'vip';
+
+export type ClientHistory = {
+  clientId: string;
+  totalAppointments: number;
+  cancellations: number;
+  noShows: number;
+  totalSpent: number;
+  favoriteServiceIds: string[];
+  rewardPoints: number;
+  rewardLevel: ClientRewardLevel;
+  lastVisitAt?: unknown;
+  notes?: string;
+};
+
+export type PaymentSummary = {
+  totalRevenue: number;
+  deposits: number;
+  pendingPayments: number;
+  completedPayments: number;
+  cash: number;
+  transfer: number;
+  mercadoPago: number;
+  spei: number;
+  oxxo: number;
+  fees: number;
+  byEmployee: Record<string, number>;
+  byService: Record<string, number>;
 };
 
 export type DayNote = {

@@ -1,4 +1,4 @@
-import { collection, doc, onSnapshot, orderBy, query } from 'firebase/firestore';
+import { collection, doc, limit, onSnapshot, orderBy, query } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
 import { db } from '../firebase';
 import { orgPath } from '../services/paths';
@@ -45,7 +45,7 @@ export function useOrganizationData(organizationId: string) {
       onSnapshot(query(collection(db, orgPath(organizationId, 'employees')), orderBy('name')), (snapshot) => {
         setEmployees(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }) as Employee));
       }, (snapshotError) => setError(snapshotError.message)),
-      onSnapshot(query(collection(db, orgPath(organizationId, 'appointments')), orderBy('date')), (snapshot) => {
+      onSnapshot(query(collection(db, orgPath(organizationId, 'appointments')), orderBy('date', 'desc'), limit(1000)), (snapshot) => {
         setAppointments(
           snapshot.docs
             .map((item) => ({ id: item.id, ...item.data() }) as Appointment)
