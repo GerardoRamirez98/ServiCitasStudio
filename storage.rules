@@ -2,11 +2,41 @@ rules_version = '2';
 
 service firebase.storage {
   match /b/{bucket}/o {
-    match /organizations/{orgId}/branding/{fileName} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null
-        && request.resource.size < 2 * 1024 * 1024
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function userProfile() {
+      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function adminForOrg(orgId) {
+      return signedIn()
+        && userProfile().organizationId == orgId
+        && userProfile().role in ['owner', 'admin'];
+    }
+
+    function validImage(maxSize) {
+      return request.resource != null
+        && request.resource.size < maxSize
         && request.resource.contentType.matches('image/.*');
+    }
+
+    match /organizations/{orgId}/branding/{fileName} {
+      allow read: if signedIn() && userProfile().organizationId == orgId;
+      allow write: if adminForOrg(orgId) && validImage(2 * 1024 * 1024);
+    }
+
+    match /organizations/{orgId}/portfolio/{fileName} {
+      allow read: if signedIn() && userProfile().organizationId == orgId;
+      allow write: if signedIn()
+        && userProfile().organizationId == orgId
+        && userProfile().role in ['owner', 'admin', 'manager', 'employee']
+        && validImage(5 * 1024 * 1024);
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
     }
   }
 }

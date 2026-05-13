@@ -1,7 +1,8 @@
 export const runtimeFeatures = {
-  firebaseFunctions: false,
-  firebaseStorage: false,
-  mercadoPagoCheckout: false,
+  firebaseFunctions: process.env.EXPO_PUBLIC_ENABLE_FUNCTIONS === 'true',
+  firebaseStorage: process.env.EXPO_PUBLIC_ENABLE_STORAGE === 'true',
+  mercadoPagoCheckout: process.env.EXPO_PUBLIC_ENABLE_MP === 'true',
+  firebaseAppCheck: process.env.EXPO_PUBLIC_ENABLE_APP_CHECK === 'true',
 };
 
 export const noBlazeMessage =

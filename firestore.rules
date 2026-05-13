@@ -1,0 +1,222 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function hasUserProfile() {
+      return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function userProfile() {
+      return userDoc().data;
+    }
+
+    function sameOrg(orgId) {
+      return hasUserProfile() && userProfile().organizationId == orgId;
+    }
+
+    function roleIn(roles) {
+      return hasUserProfile() && userProfile().role in roles;
+    }
+
+    function orgRole(orgId, roles) {
+      return sameOrg(orgId) && roleIn(roles);
+    }
+
+    function adminRole(orgId) {
+      return orgRole(orgId, ['owner', 'admin']);
+    }
+
+    function managerRole(orgId) {
+      return orgRole(orgId, ['owner', 'admin', 'manager']);
+    }
+
+    function staffRole(orgId) {
+      return orgRole(orgId, ['owner', 'admin', 'manager', 'receptionist', 'employee']);
+    }
+
+    function appointmentClient() {
+      return resource.data.clientId == request.auth.uid;
+    }
+
+    match /users/{userId} {
+      allow create: if signedIn()
+        && request.auth.uid == userId
+        && request.resource.data.role in ['client', 'employee', 'receptionist', 'manager', 'admin', 'owner'];
+      allow read: if signedIn() && (
+        request.auth.uid == userId ||
+        (hasUserProfile() && resource.data.organizationId == userProfile().organizationId && roleIn(['owner', 'admin', 'manager', 'receptionist']))
+      );
+      allow update: if signedIn() && (
+        request.auth.uid == userId ||
+        (hasUserProfile() && resource.data.organizationId == userProfile().organizationId && roleIn(['owner', 'admin']))
+      );
+      allow delete: if roleIn(['owner', 'admin']) && resource.data.organizationId == userProfile().organizationId;
+
+      match /pushTokens/{tokenId} {
+        allow read, write: if signedIn() && request.auth.uid == userId;
+      }
+    }
+
+    match /publicCodes/{code} {
+      allow read: if true;
+      allow create: if signedIn() && request.resource.data.organizationId is string;
+      allow update, delete: if hasUserProfile()
+        && userProfile().organizationId == resource.data.organizationId
+        && roleIn(['owner', 'admin']);
+    }
+
+    match /employeeInvites/{code} {
+      allow read: if true;
+      allow create, delete: if hasUserProfile()
+        && userProfile().organizationId == request.resource.data.organizationId
+        && roleIn(['owner', 'admin', 'manager']);
+      allow update: if hasUserProfile() && (
+        (userProfile().organizationId == resource.data.organizationId && roleIn(['owner', 'admin', 'manager'])) ||
+        (
+          userProfile().organizationId == resource.data.organizationId &&
+          request.resource.data.diff(resource.data).changedKeys().hasOnly(['used', 'usedBy', 'usedAt']) &&
+          request.resource.data.used == true &&
+          request.resource.data.usedBy == request.auth.uid
+        )
+      );
+    }
+
+    match /organizations/{orgId} {
+      allow create: if signedIn() && request.resource.data.ownerId == request.auth.uid;
+      allow read: if sameOrg(orgId) || (signedIn() && resource.data.ownerId == request.auth.uid);
+      allow update: if managerRole(orgId) || (signedIn() && resource.data.ownerId == request.auth.uid);
+      allow delete: if adminRole(orgId) || (signedIn() && resource.data.ownerId == request.auth.uid);
+
+      match /settings/{settingId} {
+        allow read: if sameOrg(orgId);
+        allow write: if managerRole(orgId);
+      }
+
+      match /paymentConnections/{providerId} {
+        allow read: if managerRole(orgId);
+        allow write: if false;
+      }
+
+      match /private/{secretId} {
+        allow read, write: if false;
+      }
+
+      match /mercadoPagoOAuthStates/{stateId} {
+        allow read, write: if false;
+      }
+
+      match /paymentEvents/{eventId} {
+        allow read: if managerRole(orgId);
+        allow write: if false;
+      }
+
+      match /services/{serviceId} {
+        allow read: if sameOrg(orgId);
+        allow write: if managerRole(orgId);
+      }
+
+      match /serviceCategories/{categoryId} {
+        allow read: if sameOrg(orgId);
+        allow write: if managerRole(orgId);
+      }
+
+      match /employees/{employeeId} {
+        allow read: if sameOrg(orgId);
+        allow create, delete: if managerRole(orgId);
+        allow update: if managerRole(orgId) || (
+          orgRole(orgId, ['employee']) &&
+          userProfile().employeeId == employeeId &&
+          request.resource.data.diff(resource.data).changedKeys().hasOnly(['name', 'email', 'serviceDurations', 'scheduleOverrides'])
+        );
+      }
+
+      match /employeeBlocks/{blockId} {
+        allow read: if sameOrg(orgId);
+        allow write: if managerRole(orgId) || (
+          staffRole(orgId) &&
+          request.resource.data.employeeId == userProfile().employeeId
+        );
+      }
+
+      match /dayNotes/{dayNoteId} {
+        allow read: if sameOrg(orgId);
+        allow write: if managerRole(orgId);
+      }
+
+      match /announcements/{announcementId} {
+        allow read: if sameOrg(orgId);
+        allow write: if managerRole(orgId);
+      }
+
+      match /promotions/{promotionId} {
+        allow read: if sameOrg(orgId);
+        allow write: if managerRole(orgId);
+      }
+
+      match /portfolio/{portfolioId} {
+        allow read: if sameOrg(orgId);
+        allow write: if staffRole(orgId);
+      }
+
+      match /clientHistory/{clientId} {
+        allow read: if managerRole(orgId) || (sameOrg(orgId) && request.auth.uid == clientId);
+        allow write: if false;
+      }
+
+      match /rewards/{clientId} {
+        allow read: if managerRole(orgId) || (sameOrg(orgId) && request.auth.uid == clientId);
+        allow write: if false;
+      }
+
+      match /appointments/{appointmentId} {
+        allow read: if sameOrg(orgId);
+        allow create: if false;
+        allow update: if managerRole(orgId) || (
+          staffRole(orgId) &&
+          userProfile().employeeId == resource.data.employeeId &&
+          request.resource.data.diff(resource.data).changedKeys().hasOnly([
+            'status',
+            'delayMinutes',
+            'delayNotice',
+            'servicePaymentMethod',
+            'servicePaymentStatus',
+            'servicePaidAt',
+            'updatedAt'
+          ])
+        ) || (
+          sameOrg(orgId) &&
+          roleIn(['client']) &&
+          appointmentClient() &&
+          request.resource.data.diff(resource.data).changedKeys().hasOnly([
+            'status',
+            'cancelledAt',
+            'cancelledBy',
+            'cancellationReason',
+            'cancellationTiming',
+            'refundStatus',
+            'serviceRightForfeited'
+          ]) &&
+          request.resource.data.status == 'cancelled'
+        );
+        allow delete: if adminRole(orgId);
+      }
+
+      match /financialReports/{reportId} {
+        allow read: if managerRole(orgId);
+        allow write: if false;
+      }
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
