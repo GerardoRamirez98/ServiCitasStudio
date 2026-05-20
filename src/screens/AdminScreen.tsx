@@ -14,26 +14,25 @@ import { disconnectMercadoPago } from '../services/payments';
 import { checkSqlServerConnection } from '../services/sqlServer';
 import { appearancePresets, defaultAppearance, getAppearancePalette, theme } from '../theme';
 import { useBrandColors } from '../theme-context';
-import { AppearanceSettings, Appointment, BusinessSettings, DayNote, Employee, MercadoPagoConnectionStatus, OrganizationAddress, PaymentSummary, Service, UserProfile } from '../types';
+import { Announcement, AppearanceSettings, Appointment, BusinessSettings, DayNote, Employee, MercadoPagoConnectionStatus, OrganizationAddress, PaymentSummary, Service, UserProfile } from '../types';
 import { makeEmployeeInviteCode } from '../utils/codes';
 import { dateLabel, monthMatrix, monthTitle, toDateId, weekDays } from '../utils/dates';
 import { appointmentDuration, availableEmployeesForSlot, formatDuration } from '../utils/schedule';
 
-type AdminTab = 'business' | 'agenda' | 'history' | 'schedule' | 'calendar' | 'services' | 'employees' | 'announcements' | 'payments' | 'appearance' | 'settings';
+type AdminTab = 'business' | 'agenda' | 'history' | 'schedule' | 'calendar' | 'services' | 'employees' | 'announcements' | 'payments' | 'settings';
 
 const finalAppointmentStatuses = ['completed', 'lost', 'cancelled'];
 const adminTabItems: { key: AdminTab; label: string; icon: keyof typeof Ionicons.glyphMap; helper: string }[] = [
-  { key: 'business', label: 'Negocio', icon: 'storefront-outline', helper: 'Datos, codigo y resumen' },
-  { key: 'agenda', label: 'Agenda', icon: 'calendar-outline', helper: 'Citas activas y manuales' },
-  { key: 'history', label: 'Historial', icon: 'document-text-outline', helper: 'Citas cerradas por dia' },
-  { key: 'schedule', label: 'Horarios', icon: 'time-outline', helper: 'Jornada, comida y descansos' },
-  { key: 'calendar', label: 'Calendario', icon: 'grid-outline', helper: 'Dias especiales' },
+  { key: 'business', label: 'Inicio', icon: 'storefront-outline', helper: 'Resumen y accesos rapidos' },
+  { key: 'agenda', label: 'Agenda', icon: 'calendar-outline', helper: 'Citas activas y captura rapida' },
+  { key: 'history', label: 'Historial', icon: 'document-text-outline', helper: 'Citas cerradas por fecha' },
   { key: 'services', label: 'Servicios', icon: 'cut-outline', helper: 'Precios y duraciones' },
   { key: 'employees', label: 'Equipo', icon: 'people-outline', helper: 'Empleados y rendimiento' },
   { key: 'announcements', label: 'Avisos', icon: 'megaphone-outline', helper: 'Promos y eventos' },
   { key: 'payments', label: 'Pagos', icon: 'wallet-outline', helper: 'Anticipos y Mercado Pago' },
-  { key: 'appearance', label: 'Apariencia', icon: 'color-palette-outline', helper: 'Tema, logo y mensajes' },
-  { key: 'settings', label: 'Config', icon: 'settings-outline', helper: 'Reglas de anticipo' },
+  { key: 'schedule', label: 'Horario', icon: 'time-outline', helper: 'Jornada y descansos' },
+  { key: 'calendar', label: 'Calendario', icon: 'grid-outline', helper: 'Dias especiales' },
+  { key: 'settings', label: 'Config', icon: 'settings-outline', helper: 'Negocio, apariencia y reglas' },
 ];
 
 function isFinalAppointment(appointment: Appointment) {
@@ -60,7 +59,7 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
     const today = new Date();
     return { year: today.getFullYear(), month: today.getMonth() };
   });
-  const [announcementDraft, setAnnouncementDraft] = useState({ title: '', body: '' });
+  const [announcementDraft, setAnnouncementDraft] = useState<{ title: string; body: string; audience: NonNullable<Announcement['audience']> }>({ title: '', body: '', audience: 'clients' });
   const [settingsDraft, setSettingsDraft] = useState(settings);
   const [appearanceDraft, setAppearanceDraft] = useState(appearance);
   const [historyDate, setHistoryDate] = useState(toDateId(new Date()));
@@ -134,6 +133,7 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
       name: employeeDraft.name.trim(),
       email: employeeDraft.email?.trim().toLowerCase() ?? '',
       role: employeeDraft.role.trim(),
+      specialties: employeeDraft.specialties ?? [],
       active: employeeDraft.active,
       userId: employeeDraft.userId ?? '',
       inviteCode,
@@ -236,9 +236,10 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
     await apiPost(`/organizations/${profile.organizationId}/announcements`, {
       title: announcementDraft.title.trim(),
       body: announcementDraft.body.trim(),
+      audience: announcementDraft.audience,
       active: true,
     });
-    setAnnouncementDraft({ title: '', body: '' });
+    setAnnouncementDraft({ title: '', body: '', audience: 'clients' });
   }
 
   async function saveSettings() {
@@ -434,13 +435,6 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
 
   return (
     <ScrollView contentContainerStyle={[theme.styles.scrollContent, { backgroundColor: brandColors.background }]}>
-      <View style={[theme.styles.card, { borderColor: brandColors.line }]}>
-        <Text style={[theme.styles.eyebrow, { color: brandColors.primary }]}>Codigo del negocio para clientes</Text>
-        <Text style={theme.styles.screenTitle}>{organization?.publicCode ?? 'Generando...'}</Text>
-        <Text style={theme.styles.mutedText}>{formatAddress(organization?.address)}</Text>
-        <Text style={theme.styles.mutedText}>Comparte este codigo corto con clientes. El ID interno queda oculto.</Text>
-      </View>
-
       <AdminTabMenu
         value={tab}
         onChange={(value) => setTab(value as AdminTab)}
@@ -449,8 +443,14 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
         logoUrl={appearance.logoUrl}
       />
 
+      <View style={[theme.styles.card, { borderColor: brandColors.line }]}>
+        <Text style={[theme.styles.eyebrow, { color: brandColors.primary }]}>Codigo del negocio para clientes</Text>
+        <Text style={theme.styles.screenTitle}>{organization?.publicCode ?? 'Generando...'}</Text>
+        <Text style={theme.styles.mutedText}>{formatAddress(organization?.address)}</Text>
+      </View>
+
       {tab === 'business' ? (
-        <Section title="Datos del negocio" icon="storefront-outline">
+        <Section title="Inicio operativo" icon="storefront-outline">
           <AdminOverview
             appointments={appointments}
             services={services}
@@ -463,14 +463,8 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
           <View style={theme.styles.card}>
             <Text style={[theme.styles.eyebrow, { color: brandColors.primary }]}>Codigo publico</Text>
             <Text style={theme.styles.screenTitle}>{organization?.publicCode ?? 'Generando...'}</Text>
-            <Text style={theme.styles.mutedText}>Este codigo se comparte con clientes y admins invitados.</Text>
+            <Text style={theme.styles.mutedText}>Este codigo se comparte con clientes y admins invitados. Los datos del negocio ahora viven en Configuracion.</Text>
           </View>
-          <LabeledInput label="Nombre del negocio" placeholder="Ej. Barbershop Centro" value={businessDraft.name} onChangeText={(name) => setBusinessDraft({ ...businessDraft, name })} />
-          <OrganizationAddressFields
-            value={businessDraft.address}
-            onChange={(address) => setBusinessDraft({ ...businessDraft, address })}
-          />
-          <PrimaryButton icon="save" label="Guardar datos del negocio" onPress={saveBusiness} />
         </Section>
       ) : null}
 
@@ -601,7 +595,7 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
 
       {tab === 'employees' ? (
         <Section title="Empleados" icon="people-outline">
-          <PrimaryButton icon="person-add" label="Registrar empleado" onPress={() => setEmployeeDraft({ id: '', name: '', email: '', role: '', active: true, compensationMode: 'commission', fixedSalary: 0, commissionPercent: 0 })} />
+          <PrimaryButton icon="person-add" label="Registrar empleado" onPress={() => setEmployeeDraft({ id: '', name: '', email: '', role: '', specialties: [], active: true, compensationMode: 'commission', fixedSalary: 0, commissionPercent: 0 })} />
           {employees.length ? (
             employees.map((employee) => {
               const performance = employeePerformance(employee, appointments);
@@ -610,7 +604,7 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
                   <Ionicons name={employee.active ? 'person-circle-outline' : 'pause-circle-outline'} size={24} color={employee.active ? brandColors.primary : theme.colors.muted} />
                   <View style={theme.styles.grow}>
                     <Text style={theme.styles.text}>{employee.name}</Text>
-                    <Text style={theme.styles.mutedText}>{employee.role} · {employee.email || 'sin correo'}</Text>
+                    <Text style={theme.styles.mutedText}>{[employee.role, ...(employee.specialties ?? [])].filter(Boolean).join(' · ') || 'sin puesto'} · {employee.email || 'sin correo'}</Text>
                     <Text style={theme.styles.mutedText}>Invitacion: {employee.inviteCode || 'se generara al guardar'}</Text>
                     <Text style={theme.styles.mutedText}>
                       Atendidos: {performance.completed} · Generado: ${performance.generated} · Destajo: ${performance.commission}
@@ -638,12 +632,19 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
             onChangeText={(body) => setAnnouncementDraft({ ...announcementDraft, body })}
             multiline
           />
+          <Text style={theme.styles.sectionTitle}>Audiencia</Text>
+          <View style={theme.styles.pillWrap}>
+            <Pill label="Clientes" active={announcementDraft.audience === 'clients'} onPress={() => setAnnouncementDraft({ ...announcementDraft, audience: 'clients' })} />
+            <Pill label="Empleados" active={announcementDraft.audience === 'employees'} onPress={() => setAnnouncementDraft({ ...announcementDraft, audience: 'employees' })} />
+            <Pill label="Todos" active={announcementDraft.audience === 'all'} onPress={() => setAnnouncementDraft({ ...announcementDraft, audience: 'all' })} />
+          </View>
           <PrimaryButton icon="send" label="Publicar aviso" onPress={addAnnouncement} />
           {announcements.map((announcement) => (
             <View key={announcement.id} style={theme.styles.card}>
               <View style={theme.styles.rowBetween}>
                 <View style={theme.styles.grow}>
                   <Text style={theme.styles.sectionTitle}>{announcement.title}</Text>
+                  <Text style={[theme.styles.eyebrow, { color: brandColors.primary }]}>Para: {announcement.audience === 'employees' ? 'empleados' : announcement.audience === 'clients' ? 'clientes' : 'todos'}</Text>
                   <Text style={theme.styles.mutedText}>{announcement.body}</Text>
                 </View>
                 <IconButton
@@ -676,11 +677,20 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
         />
       ) : null}
 
-      {tab === 'appearance' ? (
-        <AppearanceForm appearance={appearanceDraft} onChange={setAppearanceDraft} onSave={saveAppearance} onPickLogo={pickAndUploadLogo} />
+      {tab === 'settings' ? (
+        <SettingsHub
+          businessDraft={businessDraft}
+          setBusinessDraft={setBusinessDraft}
+          onSaveBusiness={saveBusiness}
+          appearance={appearanceDraft}
+          onAppearanceChange={setAppearanceDraft}
+          onSaveAppearance={saveAppearance}
+          onPickLogo={pickAndUploadLogo}
+          settings={settingsDraft}
+          onSettingsChange={setSettingsDraft}
+          onSaveSettings={saveSettings}
+        />
       ) : null}
-
-      {tab === 'settings' ? <SettingsForm settings={settingsDraft} onChange={setSettingsDraft} onSave={saveSettings} /> : null}
 
       <ServiceModal draft={serviceDraft} setDraft={setServiceDraft} onSave={saveService} />
       <EmployeeModal draft={employeeDraft} setDraft={setEmployeeDraft} onSave={saveEmployee} />
@@ -921,17 +931,22 @@ function HistoryByDay({
 
   return (
     <Section title="Historial por dia" icon="document-text-outline">
-      <LabeledInput
-        label="Fecha del historial"
-        helper="Formato AAAA-MM-DD. Tambien puedes elegir un dia rapido abajo."
-        placeholder="2026-05-12"
-        value={historyDate}
-        onChangeText={setHistoryDate}
-      />
-      <View style={theme.styles.pillWrap}>
-        {historyDateOptions.map((date) => (
-          <Pill key={date} label={dateLabel(date)} active={historyDate === date} onPress={() => setHistoryDate(date)} />
-        ))}
+      <View style={theme.styles.card}>
+        <View style={theme.styles.rowBetween}>
+          <View style={theme.styles.grow}>
+            <Text style={[theme.styles.eyebrow, { color: brandColors.primary }]}>Calendario compacto</Text>
+            <Text style={theme.styles.sectionTitle}>{dateLabel(historyDate)}</Text>
+          </View>
+          <Ionicons name="calendar-number-outline" size={28} color={brandColors.primary} />
+        </View>
+        <LabeledInput label="Ir a fecha" helper="AAAA-MM-DD" placeholder="2026-05-12" value={historyDate} onChangeText={setHistoryDate} />
+        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+          <View style={theme.styles.row}>
+            {historyDateOptions.map((date) => (
+              <Pill key={date} label={dateLabel(date)} active={historyDate === date} onPress={() => setHistoryDate(date)} />
+            ))}
+          </View>
+        </ScrollView>
       </View>
       <View style={theme.styles.rowCard}>
         <Ionicons name="stats-chart-outline" size={22} color={brandColors.primaryDark} />
@@ -1038,6 +1053,62 @@ function AppearanceForm({
       </View>
       <PrimaryButton icon="save" label="Guardar apariencia" onPress={onSave} />
     </Section>
+  );
+}
+
+function BusinessSettingsForm({
+  draft,
+  setDraft,
+  onSave,
+}: {
+  draft: { name: string; address: OrganizationAddress };
+  setDraft: (draft: { name: string; address: OrganizationAddress }) => void;
+  onSave: () => void;
+}) {
+  return (
+    <Section title="Datos del negocio" icon="business-outline">
+      <LabeledInput label="Nombre del negocio" placeholder="Ej. Barbershop Centro" value={draft.name} onChangeText={(name) => setDraft({ ...draft, name })} />
+      <OrganizationAddressFields value={draft.address} onChange={(address) => setDraft({ ...draft, address })} />
+      <PrimaryButton icon="save" label="Guardar datos del negocio" onPress={onSave} />
+    </Section>
+  );
+}
+
+function SettingsHub({
+  businessDraft,
+  setBusinessDraft,
+  onSaveBusiness,
+  appearance,
+  onAppearanceChange,
+  onSaveAppearance,
+  onPickLogo,
+  settings,
+  onSettingsChange,
+  onSaveSettings,
+}: {
+  businessDraft: { name: string; address: OrganizationAddress };
+  setBusinessDraft: (draft: { name: string; address: OrganizationAddress }) => void;
+  onSaveBusiness: () => void;
+  appearance: AppearanceSettings;
+  onAppearanceChange: (appearance: AppearanceSettings) => void;
+  onSaveAppearance: () => void;
+  onPickLogo: () => void;
+  settings: BusinessSettings;
+  onSettingsChange: (settings: BusinessSettings) => void;
+  onSaveSettings: () => void;
+}) {
+  return (
+    <View style={{ gap: 18 }}>
+      <Section title="Configuracion del negocio" icon="settings-outline">
+        <View style={theme.styles.card}>
+          <Text style={theme.styles.sectionTitle}>Centro de control</Text>
+          <Text style={theme.styles.mutedText}>Datos, identidad visual y reglas operativas quedan juntos para que no tengas que cazarlos por todo el panel.</Text>
+        </View>
+      </Section>
+      <BusinessSettingsForm draft={businessDraft} setDraft={setBusinessDraft} onSave={onSaveBusiness} />
+      <AppearanceForm appearance={appearance} onChange={onAppearanceChange} onSave={onSaveAppearance} onPickLogo={onPickLogo} />
+      <SettingsForm settings={settings} onChange={onSettingsChange} onSave={onSaveSettings} />
+    </View>
   );
 }
 
@@ -1238,19 +1309,28 @@ function ScheduleForm({ settings, onChange, onSave }: { settings: BusinessSettin
 
   return (
     <Section title="Horario laboral" icon="time-outline">
-      <Text style={theme.styles.mutedText}>Selecciona los dias en que el negocio trabaja. Los dias no seleccionados no permitiran citas.</Text>
-      <View style={theme.styles.pillWrap}>
-        <Pill label="Lun-Vie" active={false} onPress={() => onChange({ ...settings, workingDays: [1, 2, 3, 4, 5] })} />
-        <Pill label="Lun-Sab" active={false} onPress={() => onChange({ ...settings, workingDays: [1, 2, 3, 4, 5, 6] })} />
-        <Pill label="Todos" active={false} onPress={() => onChange({ ...settings, workingDays: [0, 1, 2, 3, 4, 5, 6] })} />
+      <View style={theme.styles.card}>
+        <Text style={[theme.styles.eyebrow, { color: brandColors.primary }]}>Plantillas rapidas</Text>
+        <Text style={theme.styles.mutedText}>Elige una base y ajusta dias u horas abajo.</Text>
+        <View style={theme.styles.pillWrap}>
+          <Pill label="Lun-Vie" active={false} onPress={() => onChange({ ...settings, workingDays: [1, 2, 3, 4, 5] })} />
+          <Pill label="Lun-Sab" active={false} onPress={() => onChange({ ...settings, workingDays: [1, 2, 3, 4, 5, 6] })} />
+          <Pill label="Todos" active={false} onPress={() => onChange({ ...settings, workingDays: [0, 1, 2, 3, 4, 5, 6] })} />
+        </View>
+        <View style={theme.styles.pillWrap}>
+          {weekDays.map((day) => (
+            <Pill key={day.id} label={day.short} active={workingDays.includes(day.id)} onPress={() => toggleDay(day.id)} />
+          ))}
+        </View>
       </View>
-      <View style={theme.styles.pillWrap}>
-        {weekDays.map((day) => (
-          <Pill key={day.id} label={day.short} active={workingDays.includes(day.id)} onPress={() => toggleDay(day.id)} />
-        ))}
+      <View style={theme.styles.row}>
+        <View style={theme.styles.grow}>
+          <LabeledInput label="Apertura" helper="Ej. 09:00." value={settings.businessStart} onChangeText={(value) => onChange({ ...settings, businessStart: value })} />
+        </View>
+        <View style={theme.styles.grow}>
+          <LabeledInput label="Cierre" helper="Ej. 18:00." value={settings.businessEnd} onChangeText={(value) => onChange({ ...settings, businessEnd: value })} />
+        </View>
       </View>
-      <LabeledInput label="Hora de apertura" helper="Formato 24 horas. Ej. 09:00." value={settings.businessStart} onChangeText={(value) => onChange({ ...settings, businessStart: value })} />
-      <LabeledInput label="Hora de cierre" helper="Formato 24 horas. Ej. 18:00." value={settings.businessEnd} onChangeText={(value) => onChange({ ...settings, businessEnd: value })} />
       <View style={theme.styles.card}>
         <Text style={[theme.styles.eyebrow, { color: brandColors.primary }]}>Comida o break</Text>
         <Text style={theme.styles.mutedText}>Si se activa, no se ofreceran citas que choquen con este descanso.</Text>
@@ -1724,6 +1804,14 @@ function ServiceModal({ draft, setDraft, onSave }: { draft: Service | null; setD
 
 function EmployeeModal({ draft, setDraft, onSave }: { draft: Employee | null; setDraft: (employee: Employee | null) => void; onSave: () => void }) {
   const brandColors = useBrandColors();
+  const [customSpecialty, setCustomSpecialty] = useState('');
+  const specialtyOptions = ['Barberia', 'Color', 'Manicure', 'Pedicure', 'Facial', 'Masaje', 'Recepcion', 'Ventas'];
+
+  function toggleSpecialty(value: string) {
+    if (!draft) return;
+    const current = draft.specialties ?? [];
+    setDraft({ ...draft, specialties: current.includes(value) ? current.filter((item) => item !== value) : [...current, value] });
+  }
 
   return (
     <Modal visible={!!draft} transparent animationType="slide">
@@ -1733,7 +1821,31 @@ function EmployeeModal({ draft, setDraft, onSave }: { draft: Employee | null; se
             <Text style={theme.styles.title}>{draft.id ? 'Editar empleado' : 'Nuevo empleado'}</Text>
             <LabeledInput label="Nombre del empleado" placeholder="Ej. Karen" value={draft.name} onChangeText={(name) => setDraft({ ...draft, name })} />
             <LabeledInput label="Correo para vincular login" helper="Debe coincidir con el correo que usara al registrarse." value={draft.email} autoCapitalize="none" keyboardType="email-address" onChangeText={(email) => setDraft({ ...draft, email })} />
-            <LabeledInput label="Puesto o especialidad" placeholder="Ej. Barbera, colorista, manicurista" value={draft.role} onChangeText={(role) => setDraft({ ...draft, role })} />
+            <LabeledInput label="Puesto principal" placeholder="Ej. Barbera, estilista, recepcion" value={draft.role} onChangeText={(role) => setDraft({ ...draft, role })} />
+            <Text style={theme.styles.sectionTitle}>Especialidades</Text>
+            <View style={theme.styles.pillWrap}>
+              {specialtyOptions.map((specialty) => (
+                <Pill key={specialty} label={specialty} active={(draft.specialties ?? []).includes(specialty)} onPress={() => toggleSpecialty(specialty)} />
+              ))}
+            </View>
+            <LabeledInput
+              label="Otra especialidad"
+              helper="Escribe una y presiona agregar para sumarla al perfil."
+              placeholder="Ej. cejas, uñas acrilicas"
+              value={customSpecialty}
+              onChangeText={setCustomSpecialty}
+            />
+            <SmallButton
+              label="Agregar especialidad escrita"
+              onPress={() => {
+                if (!draft || !customSpecialty.trim()) return;
+                const value = customSpecialty.trim();
+                if (!(draft.specialties ?? []).includes(value)) {
+                  setDraft({ ...draft, specialties: [...(draft.specialties ?? []), value] });
+                }
+                setCustomSpecialty('');
+              }}
+            />
             <Text style={theme.styles.sectionTitle}>Pago del empleado</Text>
             <View style={theme.styles.pillWrap}>
               <Pill label="Sueldo fijo" active={draft.compensationMode === 'fixed'} onPress={() => setDraft({ ...draft, compensationMode: 'fixed' })} />

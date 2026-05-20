@@ -42,6 +42,7 @@ export function ManualAppointmentModal({
   const [note, setNote] = useState('');
   const [specialPrice, setSpecialPrice] = useState('');
   const [discountReason, setDiscountReason] = useState('');
+  const [step, setStep] = useState<'client' | 'services' | 'slot'>('client');
   const [selectedServiceIds, setSelectedServiceIds] = useState<string[]>([]);
   const [selectedDate, setSelectedDate] = useState(dates[0]);
   const [selectedTime, setSelectedTime] = useState('');
@@ -147,6 +148,7 @@ export function ManualAppointmentModal({
       setDiscountReason('');
       setSelectedServiceIds([]);
       setSelectedTime('');
+      setStep('client');
       onClose();
     } catch (error) {
       Alert.alert('No se pudo guardar', readableApiError(error));
@@ -166,93 +168,98 @@ export function ManualAppointmentModal({
           </View>
 
           <ScrollView contentContainerStyle={{ gap: 12 }}>
-            <LabeledInput label="Nombre del cliente" placeholder="Ej. Juan Perez" value={clientName} onChangeText={setClientName} />
-
-            <Text style={theme.styles.sectionTitle}>Servicios</Text>
-            {activeServices.length ? (
-              activeServices.map((service) => {
-                const selected = selectedServiceIds.includes(service.id);
-                return (
-                  <Pressable
-                    key={service.id}
-                    style={[theme.styles.rowCard, selected && { borderColor: brandColors.primary, backgroundColor: brandColors.surfaceMuted }]}
-                    onPress={() => toggleService(service.id)}
-                  >
-                    <Ionicons name={selected ? 'checkmark-circle' : 'ellipse-outline'} size={22} color={selected ? brandColors.primary : theme.colors.muted} />
-                    <View style={theme.styles.grow}>
-                      <Text style={theme.styles.text}>{service.name}</Text>
-                      <Text style={theme.styles.mutedText}>
-                        ${service.price} MXN · {service.duration} min
-                      </Text>
-                    </View>
-                  </Pressable>
-                );
-              })
-            ) : (
-              <EmptyState text="Primero registra servicios activos." />
-            )}
-
-            <View style={theme.styles.card}>
-              <Text style={theme.styles.mutedText}>Duracion total</Text>
-              <Text style={theme.styles.screenTitle}>{effectiveDuration} min</Text>
-              <Text style={theme.styles.mutedText}>Subtotal normal: ${total} MXN</Text>
-              <Text style={theme.styles.sectionTitle}>Total a cobrar: ${finalTotal} MXN</Text>
-              {discountAmount > 0 ? <Text style={theme.styles.mutedText}>Descuento especial: ${discountAmount} MXN</Text> : null}
-              {selectedTime ? <Text style={theme.styles.mutedText}>Termina aprox: {addMinutes(selectedTime, effectiveDuration)}</Text> : null}
-            </View>
-
-            <Text style={theme.styles.sectionTitle}>Precio especial del personal</Text>
-            <LabeledInput
-              label="Total a cobrar"
-              helper="Solo admin o empleado. El cliente no puede decidir este precio."
-              placeholder="Total a cobrar, ej. 20 o 30"
-              value={specialPrice}
-              onChangeText={setSpecialPrice}
-              keyboardType="numeric"
-            />
-            <LabeledInput
-              label="Motivo del precio especial"
-              helper="Obligatorio si se captura precio especial. Ej. familiar, cortesia, cliente frecuente."
-              placeholder="Motivo, ej. familiar, cortesia, cliente frecuente"
-              value={discountReason}
-              onChangeText={setDiscountReason}
-            />
-
-            <Text style={theme.styles.sectionTitle}>Dia</Text>
             <View style={theme.styles.pillWrap}>
-              {dates.map((date) => (
-                <Pill
-                  key={date}
-                  label={!isWorkingDate(date, settings) ? `${dateLabel(date)} descanso` : dateLabel(date)}
-                  active={selectedDate === date}
-                  disabled={!isWorkingDate(date, settings) || dayNotes.some((day) => day.date === date && day.type === 'closed')}
-                  onPress={() => setSelectedDate(date)}
-                />
-              ))}
+              <Pill label="1 Cliente" active={step === 'client'} onPress={() => setStep('client')} />
+              <Pill label="2 Servicios" active={step === 'services'} onPress={() => setStep('services')} />
+              <Pill label="3 Horario" active={step === 'slot'} onPress={() => setStep('slot')} />
             </View>
-            {blockedDay ? <Text style={{ color: brandColors.accent, fontWeight: '800' }}>{blockedDay.note}</Text> : null}
 
-            <Text style={theme.styles.sectionTitle}>Horario disponible</Text>
-            <View style={theme.styles.pillWrap}>
-              {timeOptions.map((time) => (
-                <Pill key={time} label={time} active={selectedTime === time} onPress={() => setSelectedTime(time)} />
-              ))}
-            </View>
-            {!timeOptions.length ? <EmptyState text="No hay horario disponible para la duracion seleccionada." /> : null}
-
-            {!forcedEmployeeId ? (
+            {step === 'client' ? (
               <>
-                <Text style={theme.styles.sectionTitle}>Empleado</Text>
-                <View style={theme.styles.pillWrap}>
-                  {employeeOptions.map((employee) => (
-                    <Pill key={employee.id} label={employee.name} active={selectedEmployeeId === employee.id} onPress={() => setSelectedEmployeeId(employee.id)} />
-                  ))}
-                </View>
+                <LabeledInput label="Nombre del cliente" placeholder="Ej. Juan Perez" value={clientName} onChangeText={setClientName} />
+                <LabeledInput label="Nota de la cita" style={theme.styles.textArea} placeholder="Solicitud del cliente o nota interna" value={note} onChangeText={setNote} multiline />
+                <PrimaryButton icon="arrow-forward" label="Continuar a servicios" onPress={() => setStep('services')} />
               </>
             ) : null}
 
-            <LabeledInput label="Nota de la cita" style={theme.styles.textArea} placeholder="Solicitud del cliente o nota interna" value={note} onChangeText={setNote} multiline />
-            <PrimaryButton icon="calendar" label="Guardar cita manual" onPress={saveManualAppointment} />
+            {step === 'services' ? (
+              <>
+                <Text style={theme.styles.sectionTitle}>Servicios</Text>
+                {activeServices.length ? (
+                  activeServices.map((service) => {
+                    const selected = selectedServiceIds.includes(service.id);
+                    return (
+                      <Pressable key={service.id} style={[theme.styles.rowCard, selected && { borderColor: brandColors.primary, backgroundColor: brandColors.surfaceMuted }]} onPress={() => toggleService(service.id)}>
+                        <Ionicons name={selected ? 'checkmark-circle' : 'ellipse-outline'} size={22} color={selected ? brandColors.primary : theme.colors.muted} />
+                        <View style={theme.styles.grow}>
+                          <Text style={theme.styles.text}>{service.name}</Text>
+                          <Text style={theme.styles.mutedText}>${service.price} MXN · {service.duration} min</Text>
+                        </View>
+                      </Pressable>
+                    );
+                  })
+                ) : (
+                  <EmptyState text="Primero registra servicios activos." />
+                )}
+
+                <View style={theme.styles.card}>
+                  <Text style={theme.styles.mutedText}>Duracion total</Text>
+                  <Text style={theme.styles.screenTitle}>{effectiveDuration} min</Text>
+                  <Text style={theme.styles.mutedText}>Subtotal normal: ${total} MXN</Text>
+                  <Text style={theme.styles.sectionTitle}>Total a cobrar: ${finalTotal} MXN</Text>
+                  {discountAmount > 0 ? <Text style={theme.styles.mutedText}>Descuento especial: ${discountAmount} MXN</Text> : null}
+                </View>
+
+                <Text style={theme.styles.sectionTitle}>Precio especial del personal</Text>
+                <LabeledInput label="Total a cobrar" helper="Opcional. El cliente no puede decidir este precio." placeholder="Ej. 20 o 30" value={specialPrice} onChangeText={setSpecialPrice} keyboardType="numeric" />
+                <LabeledInput label="Motivo del precio especial" helper="Obligatorio si se captura precio especial." placeholder="Ej. familiar, cortesia, cliente frecuente" value={discountReason} onChangeText={setDiscountReason} />
+                <PrimaryButton icon="arrow-forward" label="Continuar a horario" onPress={() => setStep('slot')} />
+              </>
+            ) : null}
+
+            {step === 'slot' ? (
+              <>
+                <Text style={theme.styles.sectionTitle}>Dia</Text>
+                <View style={theme.styles.pillWrap}>
+                  {dates.map((date) => (
+                    <Pill
+                      key={date}
+                      label={!isWorkingDate(date, settings) ? `${dateLabel(date)} descanso` : dateLabel(date)}
+                      active={selectedDate === date}
+                      disabled={!isWorkingDate(date, settings) || dayNotes.some((day) => day.date === date && day.type === 'closed')}
+                      onPress={() => setSelectedDate(date)}
+                    />
+                  ))}
+                </View>
+                {blockedDay ? <Text style={{ color: brandColors.accent, fontWeight: '800' }}>{blockedDay.note}</Text> : null}
+
+                <Text style={theme.styles.sectionTitle}>Horario disponible</Text>
+                <View style={theme.styles.pillWrap}>
+                  {timeOptions.map((time) => (
+                    <Pill key={time} label={time} active={selectedTime === time} onPress={() => setSelectedTime(time)} />
+                  ))}
+                </View>
+                {!timeOptions.length ? <EmptyState text="No hay horario disponible para la duracion seleccionada." /> : null}
+
+                {!forcedEmployeeId ? (
+                  <>
+                    <Text style={theme.styles.sectionTitle}>Empleado</Text>
+                    <View style={theme.styles.pillWrap}>
+                      {employeeOptions.map((employee) => (
+                        <Pill key={employee.id} label={employee.name} active={selectedEmployeeId === employee.id} onPress={() => setSelectedEmployeeId(employee.id)} />
+                      ))}
+                    </View>
+                  </>
+                ) : null}
+
+                <View style={theme.styles.card}>
+                  <Text style={theme.styles.sectionTitle}>Resumen</Text>
+                  <Text style={theme.styles.mutedText}>{clientName || 'Cliente pendiente'} · {selectedDate} {selectedTime || '--:--'}</Text>
+                  <Text style={theme.styles.mutedText}>Total: ${finalTotal} MXN · {effectiveDuration} min{selectedTime ? ` · Termina aprox: ${addMinutes(selectedTime, effectiveDuration)}` : ''}</Text>
+                </View>
+                <PrimaryButton icon="calendar" label="Guardar cita manual" onPress={saveManualAppointment} />
+              </>
+            ) : null}
           </ScrollView>
         </View>
       </View>

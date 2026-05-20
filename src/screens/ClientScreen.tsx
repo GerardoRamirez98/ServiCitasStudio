@@ -217,9 +217,9 @@ export function ClientScreen({ profile }: { profile: UserProfile }) {
       </Section>
 
       <Section title="Avisos" icon="megaphone-outline">
-        {announcements.filter((item) => item.active).length ? (
+        {announcements.filter((item) => item.active && (!item.audience || item.audience === 'clients' || item.audience === 'all')).length ? (
           announcements
-            .filter((item) => item.active)
+            .filter((item) => item.active && (!item.audience || item.audience === 'clients' || item.audience === 'all'))
             .map((announcement) => (
               <View key={announcement.id} style={theme.styles.card}>
                 <Text style={theme.styles.sectionTitle}>{announcement.title}</Text>

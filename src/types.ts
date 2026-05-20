@@ -1,5 +1,5 @@
 export type UserRole = 'client' | 'employee' | 'receptionist' | 'manager' | 'admin' | 'owner';
-export type AppearancePreset = 'studio' | 'barber' | 'salon' | 'clinic' | 'minimal';
+export type AppearancePreset = 'studio' | 'barber' | 'salon' | 'clinic' | 'minimal' | 'tattoo' | 'spa' | 'fitness' | 'dental' | 'pet';
 export type StaffRole = Extract<UserRole, 'employee' | 'receptionist' | 'manager' | 'admin' | 'owner'>;
 
 export type UserProfile = {
@@ -55,6 +55,7 @@ export type Employee = {
   name: string;
   email?: string;
   role: string;
+  specialties?: string[];
   active: boolean;
   inviteCode?: string;
   compensationMode?: CompensationMode;
@@ -195,6 +196,7 @@ export type Announcement = {
   title: string;
   body: string;
   active: boolean;
+  audience?: 'clients' | 'employees' | 'all';
 };
 
 export type BusinessSettings = {

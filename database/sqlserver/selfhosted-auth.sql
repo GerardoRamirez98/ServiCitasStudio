@@ -46,3 +46,9 @@ IF COL_LENGTH('dbo.Appointments', 'ServicePaymentStatus') IS NULL
 IF COL_LENGTH('dbo.Appointments', 'ServicePaidAt') IS NULL
   ALTER TABLE dbo.Appointments ADD ServicePaidAt datetime2 NULL;
 GO
+
+IF COL_LENGTH('dbo.Employees', 'SpecialtiesJson') IS NULL
+  ALTER TABLE dbo.Employees ADD SpecialtiesJson nvarchar(max) NULL;
+IF COL_LENGTH('dbo.Announcements', 'Audience') IS NULL
+  ALTER TABLE dbo.Announcements ADD Audience nvarchar(40) NOT NULL CONSTRAINT DF_Announcements_Audience DEFAULT 'all';
+GO

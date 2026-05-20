@@ -197,6 +197,10 @@ async function ensureDatabaseShape() {
       ALTER TABLE dbo.Appointments ADD ServicePaymentStatus nvarchar(40) NULL;
     IF COL_LENGTH('dbo.Appointments', 'ServicePaidAt') IS NULL
       ALTER TABLE dbo.Appointments ADD ServicePaidAt datetime2 NULL;
+    IF COL_LENGTH('dbo.Employees', 'SpecialtiesJson') IS NULL
+      ALTER TABLE dbo.Employees ADD SpecialtiesJson nvarchar(max) NULL;
+    IF COL_LENGTH('dbo.Announcements', 'Audience') IS NULL
+      ALTER TABLE dbo.Announcements ADD Audience nvarchar(40) NOT NULL CONSTRAINT DF_Announcements_Audience DEFAULT 'all';
   `);
 }
 
@@ -620,14 +624,15 @@ app.post('/organizations/:organizationId/employees', requireAuth, async (req, re
     .input('name', sql.NVarChar, String(req.body.name ?? '').trim())
     .input('email', sql.NVarChar, normalizeEmail(req.body.email))
     .input('role', sql.NVarChar, String(req.body.role ?? 'employee'))
+    .input('specialtiesJson', sql.NVarChar, JSON.stringify(parseJsonArray(req.body.specialties).map(String).filter(Boolean)))
     .input('active', sql.Bit, Boolean(req.body.active))
     .input('inviteCode', sql.NVarChar, inviteCode)
     .input('compensationMode', sql.NVarChar, String(req.body.compensationMode ?? 'commission'))
     .input('fixedSalary', sql.Decimal(12, 2), Number(req.body.fixedSalary ?? 0))
     .input('commissionPercent', sql.Decimal(5, 2), Number(req.body.commissionPercent ?? 0))
     .query(`
-      INSERT INTO dbo.Employees (Id, OrganizationId, Name, Email, Role, Active, InviteCode, CompensationMode, FixedSalary, CommissionPercent)
-      VALUES (@id, @organizationId, @name, @email, @role, @active, @inviteCode, @compensationMode, @fixedSalary, @commissionPercent)
+      INSERT INTO dbo.Employees (Id, OrganizationId, Name, Email, Role, SpecialtiesJson, Active, InviteCode, CompensationMode, FixedSalary, CommissionPercent)
+      VALUES (@id, @organizationId, @name, @email, @role, @specialtiesJson, @active, @inviteCode, @compensationMode, @fixedSalary, @commissionPercent)
     `);
   res.status(201).json({ id: employeeId, inviteCode });
 });
@@ -641,13 +646,14 @@ app.put('/organizations/:organizationId/employees/:employeeId', requireAuth, asy
     .input('name', sql.NVarChar, String(req.body.name ?? '').trim())
     .input('email', sql.NVarChar, normalizeEmail(req.body.email))
     .input('role', sql.NVarChar, String(req.body.role ?? 'employee'))
+    .input('specialtiesJson', sql.NVarChar, JSON.stringify(parseJsonArray(req.body.specialties).map(String).filter(Boolean)))
     .input('active', sql.Bit, Boolean(req.body.active))
     .input('inviteCode', sql.NVarChar, String(req.body.inviteCode ?? ''))
     .input('compensationMode', sql.NVarChar, String(req.body.compensationMode ?? 'commission'))
     .input('fixedSalary', sql.Decimal(12, 2), Number(req.body.fixedSalary ?? 0))
     .input('commissionPercent', sql.Decimal(5, 2), Number(req.body.commissionPercent ?? 0))
     .query(`
-      UPDATE dbo.Employees SET Name = @name, Email = @email, Role = @role, Active = @active, InviteCode = @inviteCode,
+      UPDATE dbo.Employees SET Name = @name, Email = @email, Role = @role, SpecialtiesJson = @specialtiesJson, Active = @active, InviteCode = @inviteCode,
         CompensationMode = @compensationMode, FixedSalary = @fixedSalary, CommissionPercent = @commissionPercent, UpdatedAt = sysutcdatetime()
       WHERE Id = @id AND OrganizationId = @organizationId
     `);
@@ -876,8 +882,9 @@ app.post('/organizations/:organizationId/announcements', requireAuth, async (req
     .input('organizationId', sql.NVarChar, req.params.organizationId)
     .input('title', sql.NVarChar, String(req.body.title ?? ''))
     .input('body', sql.NVarChar, String(req.body.body ?? ''))
+    .input('audience', sql.NVarChar, enumValue(req.body.audience, ['clients', 'employees', 'all'] as const, 'all'))
     .input('active', sql.Bit, Boolean(req.body.active ?? true))
-    .query('INSERT INTO dbo.Announcements (Id, OrganizationId, Title, Body, Active) VALUES (@id, @organizationId, @title, @body, @active)');
+    .query('INSERT INTO dbo.Announcements (Id, OrganizationId, Title, Body, Audience, Active) VALUES (@id, @organizationId, @title, @body, @audience, @active)');
   res.status(201).json({ id: announcementId });
 });
 

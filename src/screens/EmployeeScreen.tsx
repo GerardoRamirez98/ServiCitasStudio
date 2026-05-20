@@ -11,7 +11,7 @@ import { Appointment, UserProfile } from '../types';
 import { appointmentDuration, availableEmployeesForSlot } from '../utils/schedule';
 
 export function EmployeeScreen({ profile }: { profile: UserProfile }) {
-  const { organization, services, employees, appointments, dayNotes, settings } = useOrganizationData(profile.organizationId);
+  const { organization, services, employees, appointments, dayNotes, settings, announcements } = useOrganizationData(profile.organizationId);
   const brandColors = useBrandColors();
   const [manualAppointmentOpen, setManualAppointmentOpen] = useState(false);
   const employee = employees.find((item) => item.userId === profile.id || item.id === profile.employeeId || item.email === profile.email);
@@ -73,6 +73,20 @@ export function EmployeeScreen({ profile }: { profile: UserProfile }) {
         <Text style={theme.styles.screenTitle}>{organization?.publicCode ?? 'Generando...'}</Text>
         <Text style={theme.styles.mutedText}>Comparte este codigo con clientes para que entren al negocio y agenden.</Text>
       </View>
+      <Section title="Avisos internos" icon="megaphone-outline">
+        {announcements.filter((item) => item.active && (item.audience === 'employees' || item.audience === 'all')).length ? (
+          announcements
+            .filter((item) => item.active && (item.audience === 'employees' || item.audience === 'all'))
+            .map((announcement) => (
+              <View key={announcement.id} style={theme.styles.card}>
+                <Text style={theme.styles.sectionTitle}>{announcement.title}</Text>
+                <Text style={theme.styles.mutedText}>{announcement.body}</Text>
+              </View>
+            ))
+        ) : (
+          <EmptyState text="No hay avisos internos activos." />
+        )}
+      </Section>
       <Section title="Mis citas" icon="id-card-outline">
         {!employee ? (
           <View style={theme.styles.card}>

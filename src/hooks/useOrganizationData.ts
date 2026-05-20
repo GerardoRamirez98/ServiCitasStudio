@@ -76,6 +76,7 @@ export function useOrganizationData(organizationId: string) {
             name: String(item.Name),
             email: item.Email ? String(item.Email) : undefined,
             role: String(item.Role),
+            specialties: parseJson<string[]>(item.SpecialtiesJson, []),
             active: Boolean(item.Active),
             inviteCode: item.InviteCode ? String(item.InviteCode) : undefined,
             compensationMode: item.CompensationMode ? String(item.CompensationMode) as Employee['compensationMode'] : undefined,
@@ -125,7 +126,7 @@ export function useOrganizationData(organizationId: string) {
           })),
         );
         setDayNotes(data.dayNotes.map((item) => ({ id: String(item.Id), date: String(item.NoteDate).slice(0, 10), type: String(item.Type) as DayNote['type'], note: String(item.Note) })));
-        setAnnouncements(data.announcements.map((item) => ({ id: String(item.Id), title: String(item.Title), body: String(item.Body), active: Boolean(item.Active) })));
+        setAnnouncements(data.announcements.map((item) => ({ id: String(item.Id), title: String(item.Title), body: String(item.Body), audience: item.Audience ? String(item.Audience) as Announcement['audience'] : 'all', active: Boolean(item.Active) })));
         const apiSettings = data.settings;
         if (apiSettings) {
           setSettings({

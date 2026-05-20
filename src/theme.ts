@@ -16,11 +16,16 @@ const colors = {
 };
 
 export const appearancePresets: Record<AppearancePreset, { label: string; primary: string; primaryDark: string; accent: string; background: string }> = {
-  studio: { label: 'Esmeralda coral', primary: '#10a37f', primaryDark: '#064e3b', accent: '#f97316', background: '#f0fbf7' },
-  barber: { label: 'Barber neon', primary: '#f43f5e', primaryDark: '#18181b', accent: '#facc15', background: '#f8fafc' },
-  salon: { label: 'Rosa editorial', primary: '#ec4899', primaryDark: '#831843', accent: '#14b8a6', background: '#fff1f6' },
-  clinic: { label: 'Azul fresco', primary: '#2563eb', primaryDark: '#1e3a8a', accent: '#84cc16', background: '#eff6ff' },
+  studio: { label: 'Studio menta', primary: '#10a37f', primaryDark: '#064e3b', accent: '#f97316', background: '#f0fbf7' },
+  barber: { label: 'Barber contraste', primary: '#f43f5e', primaryDark: '#18181b', accent: '#facc15', background: '#f8fafc' },
+  salon: { label: 'Salon editorial', primary: '#ec4899', primaryDark: '#831843', accent: '#14b8a6', background: '#fff1f6' },
+  clinic: { label: 'Clinica fresca', primary: '#2563eb', primaryDark: '#1e3a8a', accent: '#84cc16', background: '#eff6ff' },
   minimal: { label: 'Grafito solar', primary: '#475569', primaryDark: '#111827', accent: '#f59e0b', background: '#f8fafc' },
+  tattoo: { label: 'Tattoo tinta', primary: '#7c3aed', primaryDark: '#1f1333', accent: '#ef4444', background: '#f7f2ff' },
+  spa: { label: 'Spa botanico', primary: '#059669', primaryDark: '#134e4a', accent: '#d97706', background: '#f4fbf3' },
+  fitness: { label: 'Fitness energia', primary: '#ea580c', primaryDark: '#172554', accent: '#22c55e', background: '#fff7ed' },
+  dental: { label: 'Dental limpio', primary: '#0891b2', primaryDark: '#164e63', accent: '#6366f1', background: '#ecfeff' },
+  pet: { label: 'Pet alegre', primary: '#16a34a', primaryDark: '#365314', accent: '#eab308', background: '#f7fee7' },
 };
 
 export const defaultAppearance: AppearanceSettings = {
