@@ -7,14 +7,14 @@ import { ManualAppointmentModal } from '../components/ManualAppointmentModal';
 import { emptyAddress, formatAddress, isAddressComplete, OrganizationAddressFields } from '../components/OrganizationAddressFields';
 import { EmptyState, IconButton, LabeledInput, Pill, PrimaryButton, Section, SmallButton } from '../components/ui';
 import { useOrganizationData } from '../hooks/useOrganizationData';
-import { apiAssetUrl, apiDelete, apiFinanceReport, apiPatch, apiPost, apiPut, apiStoredAssetPath, apiUploadOrganizationLogo } from '../services/api';
+import { apiAssetUrl, apiDelete, apiFinanceReport, apiPatch, apiPost, apiPut, apiStoredAssetPath, apiUploadOrganizationLogo, apiUploadPortfolioImage } from '../services/api';
 import { readableApiError } from '../services/errors';
 import { buildPaymentSummary } from '../services/finance';
 import { disconnectMercadoPago } from '../services/payments';
 import { checkSqlServerConnection } from '../services/sqlServer';
 import { appearancePresets, defaultAppearance, getAppearancePalette, theme } from '../theme';
 import { useBrandColors } from '../theme-context';
-import { Announcement, AppearanceSettings, Appointment, BusinessSettings, DayNote, Employee, MercadoPagoConnectionStatus, OrganizationAddress, PaymentSummary, Service, UserProfile } from '../types';
+import { Announcement, AppearanceSettings, Appointment, BusinessSettings, DayNote, Employee, MercadoPagoConnectionStatus, OrganizationAddress, PaymentSummary, PortfolioItem, Service, ServiceCategory, UserProfile } from '../types';
 import { makeEmployeeInviteCode } from '../utils/codes';
 import { dateLabel, monthMatrix, monthTitle, toDateId, weekDays } from '../utils/dates';
 import { appointmentDuration, availableEmployeesForSlot, formatDuration } from '../utils/schedule';
@@ -47,10 +47,12 @@ function employeePerformance(employee: Employee, appointments: Appointment[]) {
 }
 
 export function AdminScreen({ profile }: { profile: UserProfile }) {
-  const { organization, services, employees, appointments, dayNotes, announcements, settings, appearance, mercadoPagoConnection } = useOrganizationData(profile.organizationId);
+  const { organization, serviceCategories, services, employees, appointments, dayNotes, announcements, portfolioItems, settings, appearance, mercadoPagoConnection } = useOrganizationData(profile.organizationId);
   const brandColors = useBrandColors();
   const [tab, setTab] = useState<AdminTab>('business');
   const [serviceDraft, setServiceDraft] = useState<Service | null>(null);
+  const [categoryDraft, setCategoryDraft] = useState<ServiceCategory | null>(null);
+  const [portfolioDraft, setPortfolioDraft] = useState<PortfolioItem | null>(null);
   const [employeeDraft, setEmployeeDraft] = useState<Employee | null>(null);
   const [manualAppointmentOpen, setManualAppointmentOpen] = useState(false);
   const [dayDraft, setDayDraft] = useState<DayNote>({ id: '', date: toDateId(new Date()), type: 'closed', note: '' });
@@ -117,6 +119,7 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
       price: Number(serviceDraft.price || 0),
       duration: Number(serviceDraft.duration || 0),
       active: serviceDraft.active,
+      categoryId: serviceDraft.categoryId ?? '',
     };
     if (serviceDraft.id) {
       await apiPut(`/organizations/${profile.organizationId}/services/${serviceDraft.id}`, payload);
@@ -124,6 +127,73 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
       await apiPost(`/organizations/${profile.organizationId}/services`, payload);
     }
     setServiceDraft(null);
+  }
+
+  async function saveCategory() {
+    if (!categoryDraft?.name.trim()) return;
+    const payload = {
+      name: categoryDraft.name.trim(),
+      active: categoryDraft.active,
+      sortOrder: Number(categoryDraft.sortOrder || 0),
+    };
+    if (categoryDraft.id) {
+      await apiPut(`/organizations/${profile.organizationId}/service-categories/${categoryDraft.id}`, payload);
+    } else {
+      await apiPost(`/organizations/${profile.organizationId}/service-categories`, payload);
+    }
+    setCategoryDraft(null);
+  }
+
+  async function pickPortfolioImage() {
+    if (!portfolioDraft) return;
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert('Permiso requerido', 'Necesitamos acceso a tus imagenes para subir trabajos al portafolio.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: true,
+      aspect: [4, 3],
+      quality: 0.86,
+    });
+    if (result.canceled || !result.assets[0]?.uri) return;
+
+    try {
+      const asset = result.assets[0];
+      const mimeType = asset.mimeType || 'image/jpeg';
+      const { imageUrl } = await apiUploadPortfolioImage({
+        organizationId: profile.organizationId,
+        uri: asset.uri,
+        fileName: asset.fileName || `portfolio.${mimeType.split('/')[1] || 'jpg'}`,
+        mimeType,
+      });
+      setPortfolioDraft((current) => (current ? { ...current, imageUrl } : current));
+    } catch (error) {
+      Alert.alert('No se pudo subir la imagen', readableApiError(error));
+    }
+  }
+
+  async function savePortfolioItem() {
+    if (!portfolioDraft?.title.trim()) return;
+    if (!portfolioDraft.imageUrl) {
+      Alert.alert('Falta imagen', 'Sube una imagen del trabajo antes de guardar.');
+      return;
+    }
+    const payload = {
+      title: portfolioDraft.title.trim(),
+      description: portfolioDraft.description?.trim() ?? '',
+      categoryId: portfolioDraft.categoryId ?? '',
+      employeeId: portfolioDraft.employeeId ?? '',
+      imageUrl: apiStoredAssetPath(portfolioDraft.imageUrl),
+      active: portfolioDraft.active !== false,
+    };
+    if (portfolioDraft.id) {
+      await apiPut(`/organizations/${profile.organizationId}/portfolio/${portfolioDraft.id}`, payload);
+    } else {
+      await apiPost(`/organizations/${profile.organizationId}/portfolio`, payload);
+    }
+    setPortfolioDraft(null);
   }
 
   async function saveEmployee() {
@@ -572,7 +642,20 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
 
       {tab === 'services' ? (
         <Section title="Servicios y precios" icon="cut-outline">
-          <PrimaryButton icon="add-circle" label="Nuevo servicio" onPress={() => setServiceDraft({ id: '', name: '', price: 0, duration: 45, active: true })} />
+          <View style={theme.styles.row}>
+            <View style={theme.styles.grow}>
+              <PrimaryButton icon="add-circle" label="Nuevo servicio" onPress={() => setServiceDraft({ id: '', name: '', price: 0, duration: 45, active: true, categoryId: serviceCategories[0]?.id })} />
+            </View>
+            <View style={theme.styles.grow}>
+              <PrimaryButton icon="folder-open" label="Nueva categoria" onPress={() => setCategoryDraft({ id: '', name: '', slug: '', active: true, sortOrder: serviceCategories.length + 1 })} />
+            </View>
+          </View>
+          <ServiceCategoriesList
+            categories={serviceCategories}
+            services={services}
+            onEdit={setCategoryDraft}
+            onDelete={(category) => apiDelete(`/organizations/${profile.organizationId}/service-categories/${category.id}`)}
+          />
           {services.length ? (
             services.map((service) => (
               <View key={service.id} style={theme.styles.rowCard}>
@@ -580,7 +663,7 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
                 <View style={theme.styles.grow}>
                   <Text style={theme.styles.text}>{service.name}</Text>
                   <Text style={theme.styles.mutedText}>
-                    ${service.price} MXN · {service.duration} min
+                    ${service.price} MXN · {service.duration} min{service.categoryId ? ` · ${serviceCategories.find((category) => category.id === service.categoryId)?.name ?? 'categoria'}` : ''}
                   </Text>
                 </View>
                 <IconButton icon="create-outline" onPress={() => setServiceDraft(service)} />
@@ -590,6 +673,14 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
           ) : (
             <EmptyState text="Crea servicios para que los clientes puedan agendar." />
           )}
+          <PortfolioAdmin
+            items={portfolioItems}
+            categories={serviceCategories}
+            employees={employees}
+            onNew={() => setPortfolioDraft({ id: '', title: '', description: '', categoryId: serviceCategories[0]?.id, employeeId: '', imageUrl: '', active: true })}
+            onEdit={setPortfolioDraft}
+            onDelete={(item) => apiDelete(`/organizations/${profile.organizationId}/portfolio/${item.id}`)}
+          />
         </Section>
       ) : null}
 
@@ -692,7 +783,9 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
         />
       ) : null}
 
-      <ServiceModal draft={serviceDraft} setDraft={setServiceDraft} onSave={saveService} />
+      <ServiceModal draft={serviceDraft} categories={serviceCategories} setDraft={setServiceDraft} onSave={saveService} />
+      <ServiceCategoryModal draft={categoryDraft} setDraft={setCategoryDraft} onSave={saveCategory} />
+      <PortfolioModal draft={portfolioDraft} categories={serviceCategories} employees={employees} setDraft={setPortfolioDraft} onPickImage={pickPortfolioImage} onSave={savePortfolioItem} />
       <EmployeeModal draft={employeeDraft} setDraft={setEmployeeDraft} onSave={saveEmployee} />
       <ManualAppointmentModal
         visible={manualAppointmentOpen}
@@ -1743,7 +1836,109 @@ const appearanceStyles = StyleSheet.create({
   },
 });
 
-function ServiceModal({ draft, setDraft, onSave }: { draft: Service | null; setDraft: (service: Service | null) => void; onSave: () => void }) {
+const portfolioStyles = StyleSheet.create({
+  thumb: {
+    width: 58,
+    height: 58,
+    borderRadius: 8,
+    backgroundColor: theme.colors.surfaceMuted,
+  },
+  preview: {
+    width: '100%',
+    aspectRatio: 4 / 3,
+    borderRadius: 8,
+    backgroundColor: theme.colors.surfaceMuted,
+  },
+});
+
+function ServiceCategoriesList({
+  categories,
+  services,
+  onEdit,
+  onDelete,
+}: {
+  categories: ServiceCategory[];
+  services: Service[];
+  onEdit: (category: ServiceCategory) => void;
+  onDelete: (category: ServiceCategory) => void;
+}) {
+  const brandColors = useBrandColors();
+  if (!categories.length) {
+    return (
+      <View style={theme.styles.card}>
+        <Text style={[theme.styles.eyebrow, { color: brandColors.primary }]}>Categorias</Text>
+        <Text style={theme.styles.mutedText}>Agrupa servicios por area para que cliente y admin encuentren mas rapido lo que buscan.</Text>
+      </View>
+    );
+  }
+
+  return (
+    <View style={theme.styles.card}>
+      <Text style={[theme.styles.eyebrow, { color: brandColors.primary }]}>Categorias</Text>
+      {categories.map((category) => (
+        <View key={category.id} style={theme.styles.rowCard}>
+          <Ionicons name={category.active ? 'folder-open-outline' : 'folder-outline'} size={22} color={category.active ? brandColors.primary : theme.colors.muted} />
+          <View style={theme.styles.grow}>
+            <Text style={theme.styles.text}>{category.name}</Text>
+            <Text style={theme.styles.mutedText}>{services.filter((service) => service.categoryId === category.id).length} servicio(s)</Text>
+          </View>
+          <IconButton icon="create-outline" onPress={() => onEdit(category)} />
+          <IconButton icon="trash-outline" onPress={() => onDelete(category)} />
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function PortfolioAdmin({
+  items,
+  categories,
+  employees,
+  onNew,
+  onEdit,
+  onDelete,
+}: {
+  items: PortfolioItem[];
+  categories: ServiceCategory[];
+  employees: Employee[];
+  onNew: () => void;
+  onEdit: (item: PortfolioItem) => void;
+  onDelete: (item: PortfolioItem) => void;
+}) {
+  const brandColors = useBrandColors();
+  return (
+    <View style={theme.styles.card}>
+      <View style={theme.styles.rowBetween}>
+        <View style={theme.styles.grow}>
+          <Text style={[theme.styles.eyebrow, { color: brandColors.primary }]}>Portafolio</Text>
+          <Text style={theme.styles.mutedText}>Muestra trabajos reales a clientes sin usar almacenamiento externo.</Text>
+        </View>
+        <SmallButton label="Nuevo trabajo" onPress={onNew} />
+      </View>
+      {items.length ? (
+        items.map((item) => {
+          const categoryName = categories.find((category) => category.id === item.categoryId)?.name;
+          const employeeName = employees.find((employee) => employee.id === item.employeeId)?.name;
+          return (
+            <View key={item.id} style={theme.styles.rowCard}>
+              {item.imageUrl ? <Image source={{ uri: item.imageUrl }} style={portfolioStyles.thumb} /> : <Ionicons name="image-outline" size={24} color={theme.colors.muted} />}
+              <View style={theme.styles.grow}>
+                <Text style={theme.styles.text}>{item.title}</Text>
+                <Text style={theme.styles.mutedText}>{[categoryName, employeeName, item.active === false ? 'oculto' : 'visible'].filter(Boolean).join(' · ')}</Text>
+              </View>
+              <IconButton icon="create-outline" onPress={() => onEdit(item)} />
+              <IconButton icon="trash-outline" onPress={() => onDelete(item)} />
+            </View>
+          );
+        })
+      ) : (
+        <EmptyState text="Sube imagenes de trabajos terminados para que aparezcan en la pantalla del cliente." />
+      )}
+    </View>
+  );
+}
+
+function ServiceModal({ draft, categories, setDraft, onSave }: { draft: Service | null; categories: ServiceCategory[]; setDraft: (service: Service | null) => void; onSave: () => void }) {
   const brandColors = useBrandColors();
 
   function updateDuration(part: 'hours' | 'minutes', rawValue: string) {
@@ -1765,6 +1960,13 @@ function ServiceModal({ draft, setDraft, onSave }: { draft: Service | null; setD
             <Text style={theme.styles.title}>{draft.id ? 'Editar servicio' : 'Nuevo servicio'}</Text>
             <LabeledInput label="Nombre del servicio" placeholder="Ej. Corte clasico" value={draft.name} onChangeText={(name) => setDraft({ ...draft, name })} />
             <LabeledInput label="Precio del servicio" helper="Cantidad en pesos MXN. Ej. 50." keyboardType="numeric" value={String(draft.price)} onChangeText={(price) => setDraft({ ...draft, price: Number(price || 0) })} />
+            <Text style={theme.styles.sectionTitle}>Categoria</Text>
+            <View style={theme.styles.pillWrap}>
+              <Pill label="Sin categoria" active={!draft.categoryId} onPress={() => setDraft({ ...draft, categoryId: '' })} />
+              {categories.map((category) => (
+                <Pill key={category.id} label={category.name} active={draft.categoryId === category.id} onPress={() => setDraft({ ...draft, categoryId: category.id })} />
+              ))}
+            </View>
             <Text style={theme.styles.sectionTitle}>Duracion del servicio</Text>
             <View style={theme.styles.row}>
               <View style={theme.styles.grow}>
@@ -1795,6 +1997,88 @@ function ServiceModal({ draft, setDraft, onSave }: { draft: Service | null; setD
               <SmallButton label="Cancelar" onPress={() => setDraft(null)} />
               <SmallButton label="Guardar" onPress={onSave} />
             </View>
+          </View>
+        ) : null}
+      </View>
+    </Modal>
+  );
+}
+
+function ServiceCategoryModal({ draft, setDraft, onSave }: { draft: ServiceCategory | null; setDraft: (category: ServiceCategory | null) => void; onSave: () => void }) {
+  const brandColors = useBrandColors();
+  return (
+    <Modal visible={!!draft} transparent animationType="slide">
+      <View style={theme.styles.modalShade}>
+        {draft ? (
+          <View style={theme.styles.modalCard}>
+            <Text style={theme.styles.title}>{draft.id ? 'Editar categoria' : 'Nueva categoria'}</Text>
+            <LabeledInput label="Nombre" placeholder="Ej. Cortes, Color, Uñas" value={draft.name} onChangeText={(name) => setDraft({ ...draft, name })} />
+            <LabeledInput label="Orden" helper="Numero menor aparece primero." keyboardType="numeric" value={String(draft.sortOrder ?? 0)} onChangeText={(sortOrder) => setDraft({ ...draft, sortOrder: Number(sortOrder || 0) })} />
+            <Pressable style={theme.styles.row} onPress={() => setDraft({ ...draft, active: !draft.active })}>
+              <Ionicons name={draft.active ? 'checkbox' : 'square-outline'} size={22} color={brandColors.primaryDark} />
+              <Text style={theme.styles.text}>Categoria visible</Text>
+            </Pressable>
+            <View style={theme.styles.row}>
+              <SmallButton label="Cancelar" onPress={() => setDraft(null)} />
+              <SmallButton label="Guardar" onPress={onSave} />
+            </View>
+          </View>
+        ) : null}
+      </View>
+    </Modal>
+  );
+}
+
+function PortfolioModal({
+  draft,
+  categories,
+  employees,
+  setDraft,
+  onPickImage,
+  onSave,
+}: {
+  draft: PortfolioItem | null;
+  categories: ServiceCategory[];
+  employees: Employee[];
+  setDraft: (item: PortfolioItem | null) => void;
+  onPickImage: () => void;
+  onSave: () => void;
+}) {
+  const brandColors = useBrandColors();
+  return (
+    <Modal visible={!!draft} transparent animationType="slide">
+      <View style={theme.styles.modalShade}>
+        {draft ? (
+          <View style={[theme.styles.modalCard, { maxHeight: '92%' }]}>
+            <ScrollView contentContainerStyle={{ gap: 12 }}>
+              <Text style={theme.styles.title}>{draft.id ? 'Editar trabajo' : 'Nuevo trabajo'}</Text>
+              {draft.imageUrl ? <Image source={{ uri: apiAssetUrl(draft.imageUrl) }} style={portfolioStyles.preview} /> : null}
+              <PrimaryButton icon="image-outline" label={draft.imageUrl ? 'Cambiar imagen' : 'Subir imagen'} onPress={onPickImage} />
+              <LabeledInput label="Titulo" placeholder="Ej. Corte degradado, uñas gel" value={draft.title} onChangeText={(title) => setDraft({ ...draft, title })} />
+              <LabeledInput label="Descripcion" style={theme.styles.textArea} placeholder="Detalle corto del trabajo" value={draft.description ?? ''} onChangeText={(description) => setDraft({ ...draft, description })} multiline />
+              <Text style={theme.styles.sectionTitle}>Categoria</Text>
+              <View style={theme.styles.pillWrap}>
+                <Pill label="Sin categoria" active={!draft.categoryId} onPress={() => setDraft({ ...draft, categoryId: '' })} />
+                {categories.map((category) => (
+                  <Pill key={category.id} label={category.name} active={draft.categoryId === category.id} onPress={() => setDraft({ ...draft, categoryId: category.id })} />
+                ))}
+              </View>
+              <Text style={theme.styles.sectionTitle}>Empleado</Text>
+              <View style={theme.styles.pillWrap}>
+                <Pill label="Sin empleado" active={!draft.employeeId} onPress={() => setDraft({ ...draft, employeeId: '' })} />
+                {employees.map((employee) => (
+                  <Pill key={employee.id} label={employee.name} active={draft.employeeId === employee.id} onPress={() => setDraft({ ...draft, employeeId: employee.id })} />
+                ))}
+              </View>
+              <Pressable style={theme.styles.row} onPress={() => setDraft({ ...draft, active: draft.active === false })}>
+                <Ionicons name={draft.active === false ? 'square-outline' : 'checkbox'} size={22} color={brandColors.primaryDark} />
+                <Text style={theme.styles.text}>Trabajo visible para clientes</Text>
+              </Pressable>
+              <View style={theme.styles.row}>
+                <SmallButton label="Cancelar" onPress={() => setDraft(null)} />
+                <SmallButton label="Guardar" onPress={onSave} />
+              </View>
+            </ScrollView>
           </View>
         ) : null}
       </View>

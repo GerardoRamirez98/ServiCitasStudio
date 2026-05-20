@@ -47,8 +47,46 @@ IF COL_LENGTH('dbo.Appointments', 'ServicePaidAt') IS NULL
   ALTER TABLE dbo.Appointments ADD ServicePaidAt datetime2 NULL;
 GO
 
+IF COL_LENGTH('dbo.Services', 'CategoryId') IS NULL
+  ALTER TABLE dbo.Services ADD CategoryId nvarchar(128) NULL;
+GO
+
 IF COL_LENGTH('dbo.Employees', 'SpecialtiesJson') IS NULL
   ALTER TABLE dbo.Employees ADD SpecialtiesJson nvarchar(max) NULL;
 IF COL_LENGTH('dbo.Announcements', 'Audience') IS NULL
   ALTER TABLE dbo.Announcements ADD Audience nvarchar(40) NOT NULL CONSTRAINT DF_Announcements_Audience DEFAULT 'all';
+GO
+
+IF OBJECT_ID('dbo.ServiceCategories', 'U') IS NULL
+BEGIN
+  CREATE TABLE dbo.ServiceCategories (
+    Id nvarchar(128) NOT NULL CONSTRAINT PK_ServiceCategories PRIMARY KEY,
+    OrganizationId nvarchar(128) NOT NULL,
+    Name nvarchar(160) NOT NULL,
+    Slug nvarchar(180) NOT NULL,
+    Active bit NOT NULL CONSTRAINT DF_ServiceCategories_Active DEFAULT 1,
+    SortOrder int NOT NULL CONSTRAINT DF_ServiceCategories_SortOrder DEFAULT 0,
+    CreatedAt datetime2 NOT NULL CONSTRAINT DF_ServiceCategories_CreatedAt DEFAULT sysutcdatetime(),
+    UpdatedAt datetime2 NOT NULL CONSTRAINT DF_ServiceCategories_UpdatedAt DEFAULT sysutcdatetime(),
+    CONSTRAINT FK_ServiceCategories_Organizations FOREIGN KEY (OrganizationId) REFERENCES dbo.Organizations(Id)
+  );
+END;
+GO
+
+IF OBJECT_ID('dbo.PortfolioItems', 'U') IS NULL
+BEGIN
+  CREATE TABLE dbo.PortfolioItems (
+    Id nvarchar(128) NOT NULL CONSTRAINT PK_PortfolioItems PRIMARY KEY,
+    OrganizationId nvarchar(128) NOT NULL,
+    Title nvarchar(200) NOT NULL,
+    Description nvarchar(500) NULL,
+    CategoryId nvarchar(128) NULL,
+    EmployeeId nvarchar(128) NULL,
+    ImageUrl nvarchar(1000) NOT NULL,
+    Active bit NOT NULL CONSTRAINT DF_PortfolioItems_Active DEFAULT 1,
+    CreatedAt datetime2 NOT NULL CONSTRAINT DF_PortfolioItems_CreatedAt DEFAULT sysutcdatetime(),
+    UpdatedAt datetime2 NOT NULL CONSTRAINT DF_PortfolioItems_UpdatedAt DEFAULT sysutcdatetime(),
+    CONSTRAINT FK_PortfolioItems_Organizations FOREIGN KEY (OrganizationId) REFERENCES dbo.Organizations(Id)
+  );
+END;
 GO

@@ -165,6 +165,14 @@ function localUploadPathFromUrl(value: unknown) {
   return resolvedPath.startsWith(uploadsRoot) ? resolvedPath : null;
 }
 
+function slugify(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'categoria';
+}
+
 async function ensureDatabaseShape() {
   const pool = await getPool();
   await pool.request().query(`
@@ -197,10 +205,39 @@ async function ensureDatabaseShape() {
       ALTER TABLE dbo.Appointments ADD ServicePaymentStatus nvarchar(40) NULL;
     IF COL_LENGTH('dbo.Appointments', 'ServicePaidAt') IS NULL
       ALTER TABLE dbo.Appointments ADD ServicePaidAt datetime2 NULL;
+    IF COL_LENGTH('dbo.Services', 'CategoryId') IS NULL
+      ALTER TABLE dbo.Services ADD CategoryId nvarchar(128) NULL;
     IF COL_LENGTH('dbo.Employees', 'SpecialtiesJson') IS NULL
       ALTER TABLE dbo.Employees ADD SpecialtiesJson nvarchar(max) NULL;
     IF COL_LENGTH('dbo.Announcements', 'Audience') IS NULL
       ALTER TABLE dbo.Announcements ADD Audience nvarchar(40) NOT NULL CONSTRAINT DF_Announcements_Audience DEFAULT 'all';
+
+    IF OBJECT_ID('dbo.ServiceCategories', 'U') IS NULL
+      CREATE TABLE dbo.ServiceCategories (
+        Id nvarchar(128) NOT NULL CONSTRAINT PK_ServiceCategories PRIMARY KEY,
+        OrganizationId nvarchar(128) NOT NULL,
+        Name nvarchar(160) NOT NULL,
+        Slug nvarchar(180) NOT NULL,
+        Active bit NOT NULL CONSTRAINT DF_ServiceCategories_Active DEFAULT 1,
+        SortOrder int NOT NULL CONSTRAINT DF_ServiceCategories_SortOrder DEFAULT 0,
+        CreatedAt datetime2 NOT NULL CONSTRAINT DF_ServiceCategories_CreatedAt DEFAULT sysutcdatetime(),
+        UpdatedAt datetime2 NOT NULL CONSTRAINT DF_ServiceCategories_UpdatedAt DEFAULT sysutcdatetime(),
+        CONSTRAINT FK_ServiceCategories_Organizations FOREIGN KEY (OrganizationId) REFERENCES dbo.Organizations(Id)
+      );
+    IF OBJECT_ID('dbo.PortfolioItems', 'U') IS NULL
+      CREATE TABLE dbo.PortfolioItems (
+        Id nvarchar(128) NOT NULL CONSTRAINT PK_PortfolioItems PRIMARY KEY,
+        OrganizationId nvarchar(128) NOT NULL,
+        Title nvarchar(200) NOT NULL,
+        Description nvarchar(500) NULL,
+        CategoryId nvarchar(128) NULL,
+        EmployeeId nvarchar(128) NULL,
+        ImageUrl nvarchar(1000) NOT NULL,
+        Active bit NOT NULL CONSTRAINT DF_PortfolioItems_Active DEFAULT 1,
+        CreatedAt datetime2 NOT NULL CONSTRAINT DF_PortfolioItems_CreatedAt DEFAULT sysutcdatetime(),
+        UpdatedAt datetime2 NOT NULL CONSTRAINT DF_PortfolioItems_UpdatedAt DEFAULT sysutcdatetime(),
+        CONSTRAINT FK_PortfolioItems_Organizations FOREIGN KEY (OrganizationId) REFERENCES dbo.Organizations(Id)
+      );
   `);
 }
 
@@ -371,21 +408,25 @@ app.get('/organizations/:id/bootstrap', requireAuth, async (req, res) => {
   const organization = await pool.request().input('id', sql.NVarChar, req.params.id).query('SELECT * FROM dbo.Organizations WHERE Id = @id');
   const settings = await pool.request().input('id', sql.NVarChar, req.params.id).query('SELECT * FROM dbo.BusinessSettings WHERE OrganizationId = @id');
   const appearance = await pool.request().input('id', sql.NVarChar, req.params.id).query('SELECT * FROM dbo.AppearanceSettings WHERE OrganizationId = @id');
+  const serviceCategories = await pool.request().input('id', sql.NVarChar, req.params.id).query('SELECT * FROM dbo.ServiceCategories WHERE OrganizationId = @id ORDER BY SortOrder, Name');
   const services = await pool.request().input('id', sql.NVarChar, req.params.id).query('SELECT * FROM dbo.Services WHERE OrganizationId = @id ORDER BY Name');
   const employees = await pool.request().input('id', sql.NVarChar, req.params.id).query('SELECT * FROM dbo.Employees WHERE OrganizationId = @id ORDER BY Name');
   const appointments = await pool.request().input('id', sql.NVarChar, req.params.id).query('SELECT TOP 1000 * FROM dbo.Appointments WHERE OrganizationId = @id ORDER BY AppointmentDate DESC, AppointmentTime DESC');
   const dayNotes = await pool.request().input('id', sql.NVarChar, req.params.id).query('SELECT * FROM dbo.DayNotes WHERE OrganizationId = @id ORDER BY NoteDate');
   const announcements = await pool.request().input('id', sql.NVarChar, req.params.id).query('SELECT * FROM dbo.Announcements WHERE OrganizationId = @id ORDER BY Title');
+  const portfolioItems = await pool.request().input('id', sql.NVarChar, req.params.id).query('SELECT * FROM dbo.PortfolioItems WHERE OrganizationId = @id ORDER BY CreatedAt DESC');
 
   res.json({
     organization: organization.recordset[0] ?? null,
     settings: settings.recordset[0] ?? null,
     appearance: appearance.recordset[0] ?? null,
+    serviceCategories: serviceCategories.recordset,
     services: services.recordset,
     employees: employees.recordset,
     appointments: appointments.recordset,
     dayNotes: dayNotes.recordset,
     announcements: announcements.recordset,
+    portfolioItems: portfolioItems.recordset,
   });
 });
 
@@ -577,6 +618,103 @@ app.post('/organizations/:organizationId/logo', requireAuth, upload.single('logo
   res.status(201).json({ logoUrl });
 });
 
+app.post('/organizations/:organizationId/portfolio/image', requireAuth, upload.single('image'), async (req, res) => {
+  if (!assertOrgAdmin(req, res)) return;
+  if (!req.file) {
+    res.status(400).json({ message: 'Selecciona una imagen para subir.' });
+    return;
+  }
+
+  const extension = imageExtensions[req.file.mimetype];
+  if (!extension) {
+    res.status(400).json({ message: 'La imagen debe ser JPG, PNG o WebP.' });
+    return;
+  }
+
+  const organizationId = paramValue(req.params.organizationId);
+  const organizationUploadDir = path.join(uploadsRoot, 'organizations', organizationId, 'portfolio');
+  const fileName = `work-${Date.now()}-${id().slice(0, 6)}.${extension}`;
+  const filePath = path.join(organizationUploadDir, fileName);
+  const imageUrl = `/uploads/organizations/${organizationId}/portfolio/${fileName}`;
+
+  await fs.mkdir(organizationUploadDir, { recursive: true });
+  await fs.writeFile(filePath, req.file.buffer);
+
+  res.status(201).json({ imageUrl });
+});
+
+app.post('/organizations/:organizationId/portfolio', requireAuth, async (req, res) => {
+  if (!assertOrgAdmin(req, res)) return;
+  const title = stringValue(req.body.title);
+  const imageUrl = stringValue(req.body.imageUrl);
+  if (!title || !imageUrl) {
+    res.status(400).json({ message: 'Titulo e imagen son requeridos.' });
+    return;
+  }
+  const portfolioId = id();
+  const pool = await getPool();
+  await pool.request()
+    .input('id', sql.NVarChar, portfolioId)
+    .input('organizationId', sql.NVarChar, req.params.organizationId)
+    .input('title', sql.NVarChar, title)
+    .input('description', sql.NVarChar, stringValue(req.body.description))
+    .input('categoryId', sql.NVarChar, stringValue(req.body.categoryId))
+    .input('employeeId', sql.NVarChar, stringValue(req.body.employeeId))
+    .input('imageUrl', sql.NVarChar, imageUrl)
+    .input('active', sql.Bit, req.body.active !== false)
+    .query(`
+      INSERT INTO dbo.PortfolioItems (Id, OrganizationId, Title, Description, CategoryId, EmployeeId, ImageUrl, Active)
+      VALUES (@id, @organizationId, @title, NULLIF(@description, ''), NULLIF(@categoryId, ''), NULLIF(@employeeId, ''), @imageUrl, @active)
+    `);
+  res.status(201).json({ id: portfolioId });
+});
+
+app.put('/organizations/:organizationId/portfolio/:portfolioId', requireAuth, async (req, res) => {
+  if (!assertOrgAdmin(req, res)) return;
+  const title = stringValue(req.body.title);
+  const imageUrl = stringValue(req.body.imageUrl);
+  if (!title || !imageUrl) {
+    res.status(400).json({ message: 'Titulo e imagen son requeridos.' });
+    return;
+  }
+  const pool = await getPool();
+  await pool.request()
+    .input('id', sql.NVarChar, req.params.portfolioId)
+    .input('organizationId', sql.NVarChar, req.params.organizationId)
+    .input('title', sql.NVarChar, title)
+    .input('description', sql.NVarChar, stringValue(req.body.description))
+    .input('categoryId', sql.NVarChar, stringValue(req.body.categoryId))
+    .input('employeeId', sql.NVarChar, stringValue(req.body.employeeId))
+    .input('imageUrl', sql.NVarChar, imageUrl)
+    .input('active', sql.Bit, req.body.active !== false)
+    .query(`
+      UPDATE dbo.PortfolioItems
+      SET Title = @title, Description = NULLIF(@description, ''), CategoryId = NULLIF(@categoryId, ''), EmployeeId = NULLIF(@employeeId, ''),
+        ImageUrl = @imageUrl, Active = @active, UpdatedAt = sysutcdatetime()
+      WHERE Id = @id AND OrganizationId = @organizationId
+    `);
+  res.json({ ok: true });
+});
+
+app.delete('/organizations/:organizationId/portfolio/:portfolioId', requireAuth, async (req, res) => {
+  if (!assertOrgAdmin(req, res)) return;
+  const pool = await getPool();
+  const current = await pool.request()
+    .input('id', sql.NVarChar, req.params.portfolioId)
+    .input('organizationId', sql.NVarChar, req.params.organizationId)
+    .query('SELECT ImageUrl FROM dbo.PortfolioItems WHERE Id = @id AND OrganizationId = @organizationId');
+  await pool.request()
+    .input('id', sql.NVarChar, req.params.portfolioId)
+    .input('organizationId', sql.NVarChar, req.params.organizationId)
+    .query('DELETE FROM dbo.PortfolioItems WHERE Id = @id AND OrganizationId = @organizationId');
+
+  const imagePath = localUploadPathFromUrl(current.recordset[0]?.ImageUrl);
+  if (imagePath) {
+    await fs.rm(imagePath, { force: true }).catch(() => undefined);
+  }
+  res.json({ ok: true });
+});
+
 app.post('/organizations/:organizationId/services', requireAuth, async (req, res) => {
   if (!assertOrgAdmin(req, res)) return;
   const serviceId = id();
@@ -588,7 +726,8 @@ app.post('/organizations/:organizationId/services', requireAuth, async (req, res
     .input('price', sql.Decimal(12, 2), Number(req.body.price ?? 0))
     .input('duration', sql.Int, Number(req.body.duration ?? 0))
     .input('active', sql.Bit, Boolean(req.body.active))
-    .query('INSERT INTO dbo.Services (Id, OrganizationId, Name, Price, Duration, Active) VALUES (@id, @organizationId, @name, @price, @duration, @active)');
+    .input('categoryId', sql.NVarChar, stringValue(req.body.categoryId))
+    .query('INSERT INTO dbo.Services (Id, OrganizationId, Name, Price, Duration, Active, CategoryId) VALUES (@id, @organizationId, @name, @price, @duration, @active, NULLIF(@categoryId, \'\'))');
   res.status(201).json({ id: serviceId });
 });
 
@@ -602,7 +741,8 @@ app.put('/organizations/:organizationId/services/:serviceId', requireAuth, async
     .input('price', sql.Decimal(12, 2), Number(req.body.price ?? 0))
     .input('duration', sql.Int, Number(req.body.duration ?? 0))
     .input('active', sql.Bit, Boolean(req.body.active))
-    .query('UPDATE dbo.Services SET Name = @name, Price = @price, Duration = @duration, Active = @active, UpdatedAt = sysutcdatetime() WHERE Id = @id AND OrganizationId = @organizationId');
+    .input('categoryId', sql.NVarChar, stringValue(req.body.categoryId))
+    .query('UPDATE dbo.Services SET Name = @name, Price = @price, Duration = @duration, Active = @active, CategoryId = NULLIF(@categoryId, \'\'), UpdatedAt = sysutcdatetime() WHERE Id = @id AND OrganizationId = @organizationId');
   res.json({ ok: true });
 });
 
@@ -610,6 +750,55 @@ app.delete('/organizations/:organizationId/services/:serviceId', requireAuth, as
   if (!assertOrgAdmin(req, res)) return;
   const pool = await getPool();
   await pool.request().input('id', sql.NVarChar, req.params.serviceId).input('organizationId', sql.NVarChar, req.params.organizationId).query('DELETE FROM dbo.Services WHERE Id = @id AND OrganizationId = @organizationId');
+  res.json({ ok: true });
+});
+
+app.post('/organizations/:organizationId/service-categories', requireAuth, async (req, res) => {
+  if (!assertOrgAdmin(req, res)) return;
+  const name = stringValue(req.body.name);
+  if (!name) {
+    res.status(400).json({ message: 'Nombre de categoria requerido.' });
+    return;
+  }
+  const categoryId = id();
+  const pool = await getPool();
+  await pool.request()
+    .input('id', sql.NVarChar, categoryId)
+    .input('organizationId', sql.NVarChar, req.params.organizationId)
+    .input('name', sql.NVarChar, name)
+    .input('slug', sql.NVarChar, slugify(name))
+    .input('active', sql.Bit, req.body.active !== false)
+    .input('sortOrder', sql.Int, numberValue(req.body.sortOrder, 0))
+    .query('INSERT INTO dbo.ServiceCategories (Id, OrganizationId, Name, Slug, Active, SortOrder) VALUES (@id, @organizationId, @name, @slug, @active, @sortOrder)');
+  res.status(201).json({ id: categoryId });
+});
+
+app.put('/organizations/:organizationId/service-categories/:categoryId', requireAuth, async (req, res) => {
+  if (!assertOrgAdmin(req, res)) return;
+  const name = stringValue(req.body.name);
+  if (!name) {
+    res.status(400).json({ message: 'Nombre de categoria requerido.' });
+    return;
+  }
+  const pool = await getPool();
+  await pool.request()
+    .input('id', sql.NVarChar, req.params.categoryId)
+    .input('organizationId', sql.NVarChar, req.params.organizationId)
+    .input('name', sql.NVarChar, name)
+    .input('slug', sql.NVarChar, slugify(name))
+    .input('active', sql.Bit, req.body.active !== false)
+    .input('sortOrder', sql.Int, numberValue(req.body.sortOrder, 0))
+    .query('UPDATE dbo.ServiceCategories SET Name = @name, Slug = @slug, Active = @active, SortOrder = @sortOrder, UpdatedAt = sysutcdatetime() WHERE Id = @id AND OrganizationId = @organizationId');
+  res.json({ ok: true });
+});
+
+app.delete('/organizations/:organizationId/service-categories/:categoryId', requireAuth, async (req, res) => {
+  if (!assertOrgAdmin(req, res)) return;
+  const pool = await getPool();
+  await pool.request()
+    .input('id', sql.NVarChar, req.params.categoryId)
+    .input('organizationId', sql.NVarChar, req.params.organizationId)
+    .query('UPDATE dbo.Services SET CategoryId = NULL WHERE CategoryId = @id AND OrganizationId = @organizationId; DELETE FROM dbo.ServiceCategories WHERE Id = @id AND OrganizationId = @organizationId');
   res.json({ ok: true });
 });
 

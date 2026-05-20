@@ -112,6 +112,42 @@ export async function apiUploadOrganizationLogo(input: { organizationId: string;
   }
 }
 
+export async function apiUploadPortfolioImage(input: { organizationId: string; uri: string; fileName?: string; mimeType?: string }) {
+  const token = await AsyncStorage.getItem(tokenKey);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
+  const formData = new FormData();
+  formData.append('image', {
+    uri: input.uri,
+    name: input.fileName || 'portfolio.jpg',
+    type: input.mimeType || 'image/jpeg',
+  } as unknown as Blob);
+
+  try {
+    const response = await fetch(`${apiUrl}/organizations/${input.organizationId}/portfolio/image`, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: formData,
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(String(payload.message ?? 'No se pudo subir la imagen.'));
+    }
+    notifyOrganizationDataChanged();
+    return { imageUrl: String(payload.imageUrl ?? '') };
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error('Tiempo de espera agotado al subir la imagen.');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export async function apiLogin(email: string, password: string) {
   const payload = await apiRequest<AuthResponse>('/auth/login', {
     method: 'POST',
@@ -158,11 +194,13 @@ export async function apiOrganizationBootstrap(organizationId: string) {
     organization: Record<string, unknown> | null;
     settings: Record<string, unknown> | null;
     appearance: Record<string, unknown> | null;
+    serviceCategories: Record<string, unknown>[];
     services: Record<string, unknown>[];
     employees: Record<string, unknown>[];
     appointments: Record<string, unknown>[];
     dayNotes: Record<string, unknown>[];
     announcements: Record<string, unknown>[];
+    portfolioItems: Record<string, unknown>[];
   }>(`/organizations/${organizationId}/bootstrap`);
 }
 

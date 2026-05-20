@@ -66,6 +66,22 @@ GO
 CREATE INDEX IX_Services_OrganizationId ON dbo.Services(OrganizationId);
 GO
 
+CREATE TABLE dbo.ServiceCategories (
+  Id nvarchar(128) NOT NULL CONSTRAINT PK_ServiceCategories PRIMARY KEY,
+  OrganizationId nvarchar(128) NOT NULL,
+  Name nvarchar(160) NOT NULL,
+  Slug nvarchar(180) NOT NULL,
+  Active bit NOT NULL CONSTRAINT DF_ServiceCategories_Active DEFAULT 1,
+  SortOrder int NOT NULL CONSTRAINT DF_ServiceCategories_SortOrder DEFAULT 0,
+  CreatedAt datetime2 NOT NULL CONSTRAINT DF_ServiceCategories_CreatedAt DEFAULT sysutcdatetime(),
+  UpdatedAt datetime2 NOT NULL CONSTRAINT DF_ServiceCategories_UpdatedAt DEFAULT sysutcdatetime(),
+  CONSTRAINT FK_ServiceCategories_Organizations FOREIGN KEY (OrganizationId) REFERENCES dbo.Organizations(Id)
+);
+GO
+
+CREATE INDEX IX_ServiceCategories_OrganizationId ON dbo.ServiceCategories(OrganizationId, SortOrder, Name);
+GO
+
 CREATE TABLE dbo.Employees (
   Id nvarchar(128) NOT NULL CONSTRAINT PK_Employees PRIMARY KEY,
   OrganizationId nvarchar(128) NOT NULL,
@@ -163,6 +179,24 @@ CREATE TABLE dbo.Announcements (
   UpdatedAt datetime2 NOT NULL CONSTRAINT DF_Announcements_UpdatedAt DEFAULT sysutcdatetime(),
   CONSTRAINT FK_Announcements_Organizations FOREIGN KEY (OrganizationId) REFERENCES dbo.Organizations(Id)
 );
+GO
+
+CREATE TABLE dbo.PortfolioItems (
+  Id nvarchar(128) NOT NULL CONSTRAINT PK_PortfolioItems PRIMARY KEY,
+  OrganizationId nvarchar(128) NOT NULL,
+  Title nvarchar(200) NOT NULL,
+  Description nvarchar(500) NULL,
+  CategoryId nvarchar(128) NULL,
+  EmployeeId nvarchar(128) NULL,
+  ImageUrl nvarchar(1000) NOT NULL,
+  Active bit NOT NULL CONSTRAINT DF_PortfolioItems_Active DEFAULT 1,
+  CreatedAt datetime2 NOT NULL CONSTRAINT DF_PortfolioItems_CreatedAt DEFAULT sysutcdatetime(),
+  UpdatedAt datetime2 NOT NULL CONSTRAINT DF_PortfolioItems_UpdatedAt DEFAULT sysutcdatetime(),
+  CONSTRAINT FK_PortfolioItems_Organizations FOREIGN KEY (OrganizationId) REFERENCES dbo.Organizations(Id)
+);
+GO
+
+CREATE INDEX IX_PortfolioItems_OrganizationId ON dbo.PortfolioItems(OrganizationId, CreatedAt DESC);
 GO
 
 CREATE TABLE dbo.BusinessSettings (

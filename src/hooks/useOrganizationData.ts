@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { apiAssetUrl, apiOrganizationBootstrap } from '../services/api';
 import { subscribeToOrganizationDataChanges } from '../services/dataEvents';
 import { defaultAppearance } from '../theme';
-import { Announcement, AppearanceSettings, Appointment, BusinessSettings, DayNote, Employee, MercadoPagoConnectionStatus, Organization, Service } from '../types';
+import { Announcement, AppearanceSettings, Appointment, BusinessSettings, DayNote, Employee, MercadoPagoConnectionStatus, Organization, PortfolioItem, Service, ServiceCategory } from '../types';
 
 export const defaultSettings: BusinessSettings = {
   requireDeposit: false,
@@ -28,10 +28,12 @@ function parseJson<T>(value: unknown, fallback: T) {
 
 export function useOrganizationData(organizationId: string) {
   const [services, setServices] = useState<Service[]>([]);
+  const [serviceCategories, setServiceCategories] = useState<ServiceCategory[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [dayNotes, setDayNotes] = useState<DayNote[]>([]);
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
+  const [portfolioItems, setPortfolioItems] = useState<PortfolioItem[]>([]);
   const [settings, setSettings] = useState(defaultSettings);
   const [appearance, setAppearance] = useState(defaultAppearance);
   const [mercadoPagoConnection, setMercadoPagoConnection] = useState<MercadoPagoConnectionStatus>({ connected: false });
@@ -67,6 +69,15 @@ export function useOrganizationData(organizationId: string) {
             duration: Number(item.Duration ?? 0),
             active: Boolean(item.Active),
             categoryId: item.CategoryId ? String(item.CategoryId) : undefined,
+          })),
+        );
+        setServiceCategories(
+          (data.serviceCategories ?? []).map((item) => ({
+            id: String(item.Id),
+            name: String(item.Name),
+            slug: String(item.Slug ?? ''),
+            active: Boolean(item.Active),
+            sortOrder: Number(item.SortOrder ?? 0),
           })),
         );
         setEmployees(
@@ -127,6 +138,18 @@ export function useOrganizationData(organizationId: string) {
         );
         setDayNotes(data.dayNotes.map((item) => ({ id: String(item.Id), date: String(item.NoteDate).slice(0, 10), type: String(item.Type) as DayNote['type'], note: String(item.Note) })));
         setAnnouncements(data.announcements.map((item) => ({ id: String(item.Id), title: String(item.Title), body: String(item.Body), audience: item.Audience ? String(item.Audience) as Announcement['audience'] : 'all', active: Boolean(item.Active) })));
+        setPortfolioItems(
+          (data.portfolioItems ?? []).map((item) => ({
+            id: String(item.Id),
+            title: String(item.Title),
+            description: item.Description ? String(item.Description) : undefined,
+            categoryId: item.CategoryId ? String(item.CategoryId) : undefined,
+            employeeId: item.EmployeeId ? String(item.EmployeeId) : undefined,
+            imageUrl: apiAssetUrl(String(item.ImageUrl ?? '')) ?? '',
+            active: Boolean(item.Active),
+            createdAt: item.CreatedAt,
+          })),
+        );
         const apiSettings = data.settings;
         if (apiSettings) {
           setSettings({
@@ -171,5 +194,5 @@ export function useOrganizationData(organizationId: string) {
     };
   }, [loadOrganizationData, organizationId]);
 
-  return { organization, services, employees, appointments, dayNotes, announcements, settings, appearance, mercadoPagoConnection, error, refetch: () => loadOrganizationData(() => true) };
+  return { organization, serviceCategories, services, employees, appointments, dayNotes, announcements, portfolioItems, settings, appearance, mercadoPagoConnection, error, refetch: () => loadOrganizationData(() => true) };
 }

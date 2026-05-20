@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useEffect, useMemo, useState } from 'react';
-import { Alert, Image, Linking, Modal, Pressable, ScrollView, Text, View } from 'react-native';
+import { Alert, Image, Linking, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { AppointmentCard } from '../components/AppointmentCard';
 import { runtimeFeatures } from '../config/features';
 import { useOrganizationData } from '../hooks/useOrganizationData';
@@ -32,7 +32,7 @@ function getCancellationTiming(appointment: Appointment, cancellationLimitHours:
 }
 
 export function ClientScreen({ profile }: { profile: UserProfile }) {
-  const { services, employees, appointments, dayNotes, announcements, settings, appearance } = useOrganizationData(profile.organizationId);
+  const { serviceCategories, services, employees, appointments, dayNotes, announcements, portfolioItems, settings, appearance } = useOrganizationData(profile.organizationId);
   const brandColors = useBrandColors();
   const [selectedServiceIds, setSelectedServiceIds] = useState<string[]>([]);
   const [selectedDate, setSelectedDate] = useState(nextDates(14)[0]);
@@ -45,6 +45,8 @@ export function ClientScreen({ profile }: { profile: UserProfile }) {
   const [cancelReason, setCancelReason] = useState('');
   const dates = useMemo(() => nextDates(14), []);
   const activeServices = services.filter((service) => service.active);
+  const visibleCategories = serviceCategories.filter((category) => category.active);
+  const activePortfolioItems = portfolioItems.filter((item) => item.active !== false);
   const activeEmployees = employees.filter((employee) => employee.active);
   const { total: selectedTotal, duration: selectedDuration } = selectedServiceSummary(selectedServiceIds, services);
   const effectiveDuration = selectedDuration || settings.slotMinutes;
@@ -233,26 +235,36 @@ export function ClientScreen({ profile }: { profile: UserProfile }) {
 
       <Section title="Servicios" icon="sparkles-outline">
         {activeServices.length ? (
-          activeServices.map((service) => {
-            const selected = selectedServiceIds.includes(service.id);
-            return (
-              <Pressable
-                key={service.id}
-                style={[theme.styles.rowCard, selected && { borderColor: brandColors.primary, backgroundColor: brandColors.surfaceMuted }]}
-                onPress={() => toggleService(service.id)}
-              >
-                <Ionicons name={selected ? 'checkmark-circle' : 'ellipse-outline'} size={22} color={selected ? brandColors.primary : theme.colors.muted} />
-                <View style={theme.styles.grow}>
-                  <Text style={theme.styles.text}>{service.name}</Text>
-                  <Text style={theme.styles.mutedText}>
-                    ${service.price} MXN · {service.duration} min
-                  </Text>
-                </View>
-              </Pressable>
-            );
-          })
+          <ServicePicker
+            services={activeServices}
+            categories={visibleCategories}
+            selectedServiceIds={selectedServiceIds}
+            toggleService={toggleService}
+          />
         ) : (
           <EmptyState text="Esta organizacion aun no tiene servicios activos." />
+        )}
+      </Section>
+
+      <Section title="Portafolio" icon="images-outline">
+        {activePortfolioItems.length ? (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            <View style={clientPortfolioStyles.row}>
+              {activePortfolioItems.map((item) => {
+                const categoryName = serviceCategories.find((category) => category.id === item.categoryId)?.name;
+                return (
+                  <View key={item.id} style={[theme.styles.card, clientPortfolioStyles.card]}>
+                    <Image source={{ uri: item.imageUrl }} style={clientPortfolioStyles.image} />
+                    <Text style={theme.styles.text}>{item.title}</Text>
+                    {categoryName ? <Text style={theme.styles.mutedText}>{categoryName}</Text> : null}
+                    {item.description ? <Text style={theme.styles.mutedText}>{item.description}</Text> : null}
+                  </View>
+                );
+              })}
+            </View>
+          </ScrollView>
+        ) : (
+          <EmptyState text="Aun no hay trabajos en el portafolio." />
         )}
       </Section>
 
@@ -348,6 +360,72 @@ export function ClientScreen({ profile }: { profile: UserProfile }) {
     </ScrollView>
   );
 }
+
+function ServicePicker({
+  services,
+  categories,
+  selectedServiceIds,
+  toggleService,
+}: {
+  services: ReturnType<typeof useOrganizationData>['services'];
+  categories: ReturnType<typeof useOrganizationData>['serviceCategories'];
+  selectedServiceIds: string[];
+  toggleService: (id: string) => void;
+}) {
+  const brandColors = useBrandColors();
+  const uncategorized = services.filter((service) => !service.categoryId || !categories.some((category) => category.id === service.categoryId));
+  const groups = [
+    ...categories
+      .map((category) => ({ id: category.id, name: category.name, services: services.filter((service) => service.categoryId === category.id) }))
+      .filter((group) => group.services.length),
+    ...(uncategorized.length ? [{ id: 'uncategorized', name: 'Otros servicios', services: uncategorized }] : []),
+  ];
+
+  return (
+    <View style={{ gap: 12 }}>
+      {groups.map((group) => (
+        <View key={group.id} style={{ gap: 8 }}>
+          <Text style={[theme.styles.eyebrow, { color: brandColors.primary }]}>{group.name}</Text>
+          {group.services.map((service) => {
+            const selected = selectedServiceIds.includes(service.id);
+            return (
+              <Pressable
+                key={service.id}
+                style={[theme.styles.rowCard, selected && { borderColor: brandColors.primary, backgroundColor: brandColors.surfaceMuted }]}
+                onPress={() => toggleService(service.id)}
+              >
+                <Ionicons name={selected ? 'checkmark-circle' : 'ellipse-outline'} size={22} color={selected ? brandColors.primary : theme.colors.muted} />
+                <View style={theme.styles.grow}>
+                  <Text style={theme.styles.text}>{service.name}</Text>
+                  <Text style={theme.styles.mutedText}>
+                    ${service.price} MXN · {service.duration} min
+                  </Text>
+                </View>
+              </Pressable>
+            );
+          })}
+        </View>
+      ))}
+    </View>
+  );
+}
+
+const clientPortfolioStyles = StyleSheet.create({
+  row: {
+    flexDirection: 'row',
+    gap: 12,
+    paddingRight: 16,
+  },
+  card: {
+    width: 230,
+  },
+  image: {
+    width: '100%',
+    aspectRatio: 4 / 3,
+    borderRadius: 8,
+    backgroundColor: theme.colors.surfaceMuted,
+  },
+});
 
 function CancelAppointmentModal({
   appointment,

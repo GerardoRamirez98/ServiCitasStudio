@@ -151,6 +151,7 @@ export type PortfolioItem = {
   categoryId?: string;
   employeeId?: string;
   imageUrl: string;
+  active?: boolean;
   createdAt?: unknown;
 };
 
