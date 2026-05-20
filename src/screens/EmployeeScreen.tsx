@@ -1,12 +1,10 @@
 import { useState } from 'react';
-import { doc, updateDoc } from 'firebase/firestore';
 import { ScrollView, Text, View } from 'react-native';
 import { AppointmentCard } from '../components/AppointmentCard';
 import { ManualAppointmentModal } from '../components/ManualAppointmentModal';
 import { EmptyState, Pill, PrimaryButton, Section, SmallButton } from '../components/ui';
-import { db } from '../firebase';
 import { useOrganizationData } from '../hooks/useOrganizationData';
-import { orgPath } from '../services/paths';
+import { apiPatch } from '../services/api';
 import { theme } from '../theme';
 import { useBrandColors } from '../theme-context';
 import { Appointment, UserProfile } from '../types';
@@ -27,7 +25,7 @@ export function EmployeeScreen({ profile }: { profile: UserProfile }) {
   const commission = Math.round((generated * Number(employee?.commissionPercent || 0)) / 100);
 
   async function updateAppointment(appointment: Appointment, payload: Partial<Appointment>) {
-    await updateDoc(doc(db, orgPath(profile.organizationId, 'appointments'), appointment.id), payload);
+    await apiPatch(`/organizations/${profile.organizationId}/appointments/${appointment.id}`, payload);
   }
 
   async function markDepositReceived(appointment: Appointment, method: 'cash' | 'transfer') {

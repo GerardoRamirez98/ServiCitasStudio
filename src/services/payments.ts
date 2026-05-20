@@ -1,40 +1,17 @@
-import { httpsCallable } from 'firebase/functions';
-import { noBlazeMessage, runtimeFeatures } from '../config/features';
-import { functions } from '../firebase';
-
-type CreateOAuthUrlResponse = {
-  authorizationUrl: string;
-};
-
 type CreateDepositPreferenceResponse = {
   checkoutUrl: string;
   preferenceId: string;
   sandboxCheckoutUrl?: string;
 };
 
-export async function createMercadoPagoOAuthUrl(organizationId: string) {
-  if (!runtimeFeatures.firebaseFunctions || !runtimeFeatures.mercadoPagoCheckout) {
-    throw new Error(noBlazeMessage);
-  }
-  const callable = httpsCallable<{ organizationId: string }, CreateOAuthUrlResponse>(functions, 'createMercadoPagoOAuthUrl');
-  const result = await callable({ organizationId });
-  return result.data.authorizationUrl;
+export async function createMercadoPagoOAuthUrl(_organizationId: string) {
+  throw new Error('Mercado Pago automatico esta desactivado en modo self-hosted.');
 }
 
-export async function disconnectMercadoPago(organizationId: string) {
-  if (!runtimeFeatures.firebaseFunctions || !runtimeFeatures.mercadoPagoCheckout) {
-    throw new Error(noBlazeMessage);
-  }
-  const callable = httpsCallable<{ organizationId: string }, { connected: boolean }>(functions, 'disconnectMercadoPago');
-  const result = await callable({ organizationId });
-  return result.data;
+export async function disconnectMercadoPago(_organizationId: string) {
+  return { connected: false };
 }
 
-export async function createDepositPreference(organizationId: string, appointmentId: string) {
-  if (!runtimeFeatures.firebaseFunctions || !runtimeFeatures.mercadoPagoCheckout) {
-    throw new Error(noBlazeMessage);
-  }
-  const callable = httpsCallable<{ organizationId: string; appointmentId: string }, CreateDepositPreferenceResponse>(functions, 'createDepositPreference');
-  const result = await callable({ organizationId, appointmentId });
-  return result.data;
+export async function createDepositPreference(_organizationId: string, _appointmentId: string): Promise<CreateDepositPreferenceResponse> {
+  throw new Error('Los anticipos se confirman manualmente en modo self-hosted.');
 }

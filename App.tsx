@@ -7,10 +7,7 @@ import { AdminScreen } from './src/screens/AdminScreen';
 import { AuthScreen } from './src/screens/AuthScreen';
 import { ClientScreen } from './src/screens/ClientScreen';
 import { EmployeeScreen } from './src/screens/EmployeeScreen';
-import { ProfileRecoveryScreen } from './src/screens/ProfileRecoveryScreen';
-import { registerPushToken } from './src/services/notifications';
 import { theme } from './src/theme';
-import { useEffect } from 'react';
 
 export default function App() {
   return (
@@ -21,12 +18,7 @@ export default function App() {
 }
 
 function AppContent() {
-  const { profile, authUser, missingProfile, loading } = useAuthProfile();
-
-  useEffect(() => {
-    if (!profile) return;
-    registerPushToken(profile).catch(() => undefined);
-  }, [profile]);
+  const { profile, loading } = useAuthProfile();
 
   if (loading) {
     return (
@@ -39,9 +31,6 @@ function AppContent() {
   }
 
   if (!profile) {
-    if (authUser && missingProfile) {
-      return <ProfileRecoveryScreen user={authUser} />;
-    }
     return <AuthScreen />;
   }
 

@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useEffect, useMemo, useState } from 'react';
 import { Alert, Modal, Pressable, ScrollView, Text, View } from 'react-native';
 import { createAppointment } from '../services/appointments';
-import { readableFirebaseError } from '../services/errors';
+import { readableApiError } from '../services/errors';
 import { theme } from '../theme';
 import { useBrandColors } from '../theme-context';
 import { Appointment, BusinessSettings, DayNote, Employee, Service } from '../types';
@@ -149,7 +149,7 @@ export function ManualAppointmentModal({
       setSelectedTime('');
       onClose();
     } catch (error) {
-      Alert.alert('No se pudo guardar', readableFirebaseError(error));
+      Alert.alert('No se pudo guardar', readableApiError(error));
     }
   }
 

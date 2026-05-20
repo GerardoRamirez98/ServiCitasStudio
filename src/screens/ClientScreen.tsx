@@ -1,15 +1,13 @@
 import { Ionicons } from '@expo/vector-icons';
-import { doc, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { useEffect, useMemo, useState } from 'react';
 import { Alert, Image, Linking, Modal, Pressable, ScrollView, Text, View } from 'react-native';
 import { AppointmentCard } from '../components/AppointmentCard';
 import { runtimeFeatures } from '../config/features';
-import { db } from '../firebase';
 import { useOrganizationData } from '../hooks/useOrganizationData';
 import { createAppointment } from '../services/appointments';
-import { readableFirebaseError } from '../services/errors';
+import { apiPatch } from '../services/api';
+import { readableApiError } from '../services/errors';
 import { createDepositPreference } from '../services/payments';
-import { orgPath } from '../services/paths';
 import { getAppearancePalette, theme } from '../theme';
 import { useBrandColors } from '../theme-context';
 import { Appointment, BusinessSettings, PaymentMethod, UserProfile } from '../types';
@@ -41,7 +39,7 @@ export function ClientScreen({ profile }: { profile: UserProfile }) {
   const [selectedTime, setSelectedTime] = useState('');
   const [clientNote, setClientNote] = useState('');
   const [acceptedTerms, setAcceptedTerms] = useState(false);
-  const automaticPaymentsEnabled = runtimeFeatures.firebaseFunctions && runtimeFeatures.mercadoPagoCheckout;
+  const automaticPaymentsEnabled = runtimeFeatures.mercadoPagoCheckout;
   const [depositPaymentMethod, setDepositPaymentMethod] = useState<PaymentMethod>(automaticPaymentsEnabled ? 'mercado_pago' : 'transfer');
   const [cancelDraft, setCancelDraft] = useState<Appointment | null>(null);
   const [cancelReason, setCancelReason] = useState('');
@@ -96,9 +94,8 @@ export function ClientScreen({ profile }: { profile: UserProfile }) {
   async function cancelAppointment() {
     if (!cancelDraft) return;
     try {
-      await updateDoc(doc(db, orgPath(profile.organizationId, 'appointments'), cancelDraft.id), {
+      await apiPatch(`/organizations/${profile.organizationId}/appointments/${cancelDraft.id}`, {
         status: 'cancelled',
-        cancelledAt: serverTimestamp(),
         cancelledBy: 'client',
         cancellationReason: cancelReason.trim() || 'Cancelada por el cliente.',
         cancellationTiming: getCancellationTiming(cancelDraft, settings.cancellationLimitHours),
@@ -110,7 +107,7 @@ export function ClientScreen({ profile }: { profile: UserProfile }) {
       setCancelReason('');
       Alert.alert('Cita cancelada', hadDeposit ? 'El anticipo queda marcado como no reembolsable y la cita no conserva derecho al servicio.' : 'La cita fue cancelada.');
     } catch (error) {
-      Alert.alert('No se pudo cancelar', readableFirebaseError(error));
+      Alert.alert('No se pudo cancelar', readableApiError(error));
     }
   }
 
@@ -184,7 +181,7 @@ export function ClientScreen({ profile }: { profile: UserProfile }) {
           : 'Quedo pendiente de confirmacion.',
       );
     } catch (error) {
-      Alert.alert('No se pudo guardar', readableFirebaseError(error));
+      Alert.alert('No se pudo guardar', readableApiError(error));
     }
   }
 

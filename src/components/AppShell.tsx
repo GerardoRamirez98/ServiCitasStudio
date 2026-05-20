@@ -1,9 +1,8 @@
-import { signOut } from 'firebase/auth';
 import { ReactNode } from 'react';
 import { Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { auth } from '../firebase';
 import { useOrganizationData } from '../hooks/useOrganizationData';
+import { apiLogout } from '../services/api';
 import { getAppearancePalette, theme } from '../theme';
 import { BrandThemeProvider, useBrandColors } from '../theme-context';
 import { UserProfile, UserRole } from '../types';
@@ -55,7 +54,7 @@ function AppShellFrame({
               {profile.name} · {roleLabels[profile.role]}
             </Text>
           </View>
-          <IconButton icon="log-out-outline" onPress={() => signOut(auth)} />
+          <IconButton icon="log-out-outline" onPress={() => apiLogout()} />
         </View>
       </View>
       {children}

@@ -1,7 +1,5 @@
-import { httpsCallable } from 'firebase/functions';
-import { runtimeFeatures } from '../config/features';
-import { functions } from '../firebase';
 import { PaymentMethod } from '../types';
+import { apiPost } from './api';
 
 export type CreateAppointmentInput = {
   organizationId: string;
@@ -32,12 +30,6 @@ export type CreateAppointmentResponse = {
   employeeId: string;
 };
 
-export async function createAppointment(input: CreateAppointmentInput) {
-  if (!runtimeFeatures.firebaseFunctions) {
-    throw new Error('Las reservas atomicas requieren Firebase Functions activo.');
-  }
-
-  const callable = httpsCallable<CreateAppointmentInput, CreateAppointmentResponse>(functions, 'createAppointment');
-  const result = await callable(input);
-  return result.data;
+export function createAppointment(input: CreateAppointmentInput) {
+  return apiPost<CreateAppointmentResponse>(`/organizations/${input.organizationId}/appointments`, input);
 }

@@ -1,18 +1,15 @@
 import { StatusBar } from 'expo-status-bar';
-import { createUserWithEmailAndPassword, signInWithEmailAndPassword } from 'firebase/auth';
-import { addDoc, collection, doc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import { useState } from 'react';
 import { Alert, Pressable, ScrollView, Text } from 'react-native';
 import { View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { auth, db } from '../firebase';
-import { readableFirebaseError } from '../services/errors';
-import { createPublicOrganizationCode, resolveEmployeeInvite, resolveOrganizationCode } from '../services/organizations';
-import { defaultAppearance, theme } from '../theme';
+import { readableApiError } from '../services/errors';
+import { theme } from '../theme';
 import { UserRole } from '../types';
 import { normalizeCode } from '../utils/codes';
 import { emptyAddress, isAddressComplete, OrganizationAddressFields } from '../components/OrganizationAddressFields';
 import { LabeledInput, PrimaryButton, Segmented } from '../components/ui';
+import { apiLogin, apiRegister } from '../services/api';
 
 export function AuthScreen() {
   const [isRegister, setIsRegister] = useState(false);
@@ -55,97 +52,21 @@ export function AuthScreen() {
     setBusy(true);
     try {
       if (!isRegister) {
-        await signInWithEmailAndPassword(auth, email.trim(), password);
+        await apiLogin(email.trim(), password);
         return;
       }
-
-      const resolvedOrganization =
-        role === 'client' || (role === 'admin' && adminMode === 'join') ? await resolveOrganizationCode(organizationCode) : null;
-      const resolvedInvite = role === 'employee' ? await resolveEmployeeInvite(employeeInviteCode) : null;
-
-      if (resolvedInvite?.used) {
-        throw new Error('Este codigo de empleado ya fue usado.');
-      }
-      if (resolvedInvite?.email && resolvedInvite.email !== email.trim().toLowerCase()) {
-        throw new Error('Este codigo fue creado para otro correo.');
-      }
-
-      const credential = await createUserWithEmailAndPassword(auth, email.trim(), password);
-      let finalOrganizationId = '';
-      let finalOrganizationName = organizationName.trim();
-      let employeeId: string | null = null;
-
-      if (role === 'admin' && adminMode === 'create') {
-        const organizationRef = await addDoc(collection(db, 'organizations'), {
-          name: organizationName.trim(),
-          address: organizationAddress,
-          ownerId: credential.user.uid,
-          createdAt: serverTimestamp(),
-        });
-        finalOrganizationId = organizationRef.id;
-        finalOrganizationName = organizationName.trim();
-        await createPublicOrganizationCode(finalOrganizationId, finalOrganizationName);
-      }
-
-      if (role === 'admin' && adminMode === 'join') {
-        finalOrganizationId = resolvedOrganization?.organizationId ?? '';
-        finalOrganizationName = resolvedOrganization?.organizationName ?? 'Organizacion';
-      }
-
-      if (role === 'client') {
-        finalOrganizationId = resolvedOrganization?.organizationId ?? '';
-        finalOrganizationName = resolvedOrganization?.organizationName ?? 'Organizacion';
-      }
-
-      if (role === 'employee') {
-        finalOrganizationId = resolvedInvite?.organizationId ?? '';
-        finalOrganizationName = resolvedInvite?.organizationName ?? 'Organizacion';
-        employeeId = resolvedInvite?.employeeId ?? null;
-      }
-
-      await setDoc(doc(db, 'users', credential.user.uid), {
+      await apiRegister({
         name: name.trim(),
         email: email.trim().toLowerCase(),
-        role,
-        organizationId: finalOrganizationId,
-        organizationName: finalOrganizationName || 'Organizacion',
-        employeeId,
-        createdAt: serverTimestamp(),
+        password,
+        role: role === 'admin' && adminMode === 'create' ? 'owner' : role,
+        organizationName: role === 'admin' && adminMode === 'create' ? organizationName.trim() : undefined,
+        organizationCode: role === 'client' || (role === 'admin' && adminMode === 'join') ? organizationCode : undefined,
+        organizationAddress: role === 'admin' && adminMode === 'create' ? organizationAddress : undefined,
+        employeeInviteCode: role === 'employee' ? employeeInviteCode : undefined,
       });
-
-      if (role === 'employee' && resolvedInvite && employeeId) {
-        await updateDoc(doc(db, 'organizations', finalOrganizationId, 'employees', employeeId), {
-          userId: credential.user.uid,
-          active: true,
-        });
-        await updateDoc(doc(db, 'employeeInvites', resolvedInvite.inviteCode), {
-          used: true,
-          usedBy: credential.user.uid,
-        });
-      }
-
-      if (role === 'admin' && adminMode === 'create') {
-        await setDoc(doc(db, 'organizations', finalOrganizationId, 'settings', 'business'), {
-          requireDeposit: false,
-          depositPercent: 30,
-          toleranceMinutes: 10,
-          cancellationLimitHours: 24,
-          businessStart: '09:00',
-          businessEnd: '18:00',
-          breakEnabled: false,
-          breakStart: '14:00',
-          breakEnd: '15:00',
-          slotMinutes: 60,
-          workingDays: [1, 2, 3, 4, 5, 6],
-        });
-        await setDoc(doc(db, 'organizations', finalOrganizationId, 'settings', 'appearance'), {
-          ...defaultAppearance,
-          displayName: finalOrganizationName,
-          tagline: 'Agenda y citas en tiempo real',
-        });
-      }
     } catch (error) {
-      Alert.alert('No se pudo continuar', readableFirebaseError(error));
+      Alert.alert('No se pudo continuar', readableApiError(error));
     } finally {
       setBusy(false);
     }

@@ -1,63 +1,61 @@
 # ServiCitas Studio
 
-App Expo + Firebase para agenda multi negocio con roles, citas, anticipos, Mercado Pago Marketplace y reglas listas para despliegue.
+App Expo self-hosted para agenda multi negocio con API propia y SQL Server.
 
-## Stack
+## Desarrollo local
 
-- React Native + Expo SDK 54
-- Firebase Auth, Firestore, Storage, Functions
-- Mercado Pago OAuth + webhooks
-- Expo Notifications para push
-- Multi tenant por `organizationId`
+1. Configura SQL Server y ejecuta los scripts en `database/sqlserver`.
+2. Copia `server/.env.example` a `server/.env` y ajusta credenciales.
+3. Copia `.env.example` a `.env` y apunta la app a la API.
+4. Inicia backend y app:
 
-## Configuracion
+```bash
+npm run server:start
+npm start
+```
 
-1. Copia `.env.example` a `.env`.
-2. Completa las variables `EXPO_PUBLIC_FIREBASE_*`.
-3. Activa features por ambiente:
+## Arquitectura
+
+- `server/`: API Express con JWT, SQL Server y endpoints REST.
+- `database/sqlserver/`: esquema y migraciones base.
+- `src/services/api.ts`: cliente HTTP de la app.
+- `src/hooks/useAuthProfile.ts`: sesion local con token JWT.
+- `src/hooks/useOrganizationData.ts`: carga inicial desde la API.
+- `server/uploads/` o `UPLOADS_DIR`: imagenes subidas por el backend; SQL Server guarda solo la ruta publica.
+
+## Estado actual
+
+- Autenticacion con JWT y roles por negocio.
+- Registro de negocio con direccion, clientes por codigo publico y empleados por codigo privado.
+- Agenda con servicios, empleados, horarios laborales, descansos, dias especiales y bloqueo de empalmes desde la API.
+- Mutaciones del negocio refrescan la informacion visible de la app automaticamente.
+- Anticipos en modo self-hosted: se registran y confirman manualmente.
+- Logo del negocio subido al backend como archivo; SQL Server guarda solo la ruta.
+
+## Pendiente externo
+
+- Mercado Pago automatico requiere credenciales, OAuth y webhooks reales.
+- Push notifications requieren configurar proveedor de notificaciones y permisos de dispositivo.
+
+## Variables principales
+
+App:
 
 ```env
-EXPO_PUBLIC_ENABLE_FUNCTIONS=true
-EXPO_PUBLIC_ENABLE_STORAGE=true
-EXPO_PUBLIC_ENABLE_MP=true
-EXPO_PUBLIC_ENABLE_APP_CHECK=false
+EXPO_PUBLIC_API_URL=http://127.0.0.1:4000
+EXPO_PUBLIC_ENABLE_MP=false
 ```
 
-Para Functions configura parametros/secrets:
+Servidor:
 
-```bash
-npx firebase-tools functions:secrets:set MP_CLIENT_SECRET --project servicitas-studio
-npx firebase-tools functions:secrets:set MP_WEBHOOK_SECRET --project servicitas-studio
+```env
+PORT=4000
+JWT_SECRET=change-this-long-random-secret
+UPLOADS_DIR=uploads
+SQLSERVER_HOST=localhost
+SQLSERVER_INSTANCE=SQLEXPRESS
+SQLSERVER_DATABASE=ServiCitasStudio
+SQLSERVER_USER=sa
+SQLSERVER_PASSWORD=
+SQLSERVER_DRIVER=msnodesqlv8
 ```
-
-## Scripts
-
-```bash
-npm start
-npm run typecheck
-npm run functions:build
-npm run deploy:rules
-npm run deploy:indexes
-```
-
-## Seguridad
-
-- `firestore.rules` bloquea escritura directa de citas; las reservas se crean con `createAppointment` en Functions.
-- `storage.rules` valida autenticacion, pertenencia a organizacion, rol admin/owner, tamano y MIME.
-- Tokens OAuth de Mercado Pago viven en `organizations/{orgId}/private/mercadopago`, sin acceso cliente.
-- Webhooks escriben `paymentEvents` y actualizan citas solo desde Admin SDK.
-
-## Reservas
-
-La app usa `src/services/appointments.ts`, que llama la Function `createAppointment`. Esa Function valida rol, organizacion, fecha, hora, duracion, servicios y ejecuta una transaccion que lee las citas del dia y evita solapamientos por empleado.
-
-## Produccion
-
-Antes de publicar:
-
-- Desplegar `firestore.rules`, `storage.rules` e indices.
-- Activar App Check en Firebase Console y colocar `EXPO_PUBLIC_RECAPTCHA_ENTERPRISE_SITE_KEY` si se usa web.
-- Configurar URL publica del webhook de Mercado Pago.
-- Revisar `npm audit` y decidir actualizaciones compatibles.
-
-Ver detalles completos en `ARCHITECTURE.md`.

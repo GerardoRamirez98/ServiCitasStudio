@@ -1,24 +1,20 @@
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
-import { addDoc, collection, deleteDoc, doc, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
-import { getDownloadURL, ref, uploadString } from 'firebase/storage';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Animated, Image, Linking, Modal, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { Alert, Animated, Image, Modal, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { AppointmentCard } from '../components/AppointmentCard';
 import { ManualAppointmentModal } from '../components/ManualAppointmentModal';
 import { emptyAddress, formatAddress, isAddressComplete, OrganizationAddressFields } from '../components/OrganizationAddressFields';
 import { EmptyState, IconButton, LabeledInput, Pill, PrimaryButton, Section, SmallButton } from '../components/ui';
-import { noBlazeMessage, runtimeFeatures } from '../config/features';
-import { db, storage } from '../firebase';
 import { useOrganizationData } from '../hooks/useOrganizationData';
-import { readableFirebaseError } from '../services/errors';
+import { apiAssetUrl, apiDelete, apiFinanceReport, apiPatch, apiPost, apiPut, apiStoredAssetPath, apiUploadOrganizationLogo } from '../services/api';
+import { readableApiError } from '../services/errors';
 import { buildPaymentSummary } from '../services/finance';
-import { createPublicOrganizationCode } from '../services/organizations';
-import { createMercadoPagoOAuthUrl, disconnectMercadoPago } from '../services/payments';
-import { orgPath } from '../services/paths';
+import { disconnectMercadoPago } from '../services/payments';
+import { checkSqlServerConnection } from '../services/sqlServer';
 import { appearancePresets, defaultAppearance, getAppearancePalette, theme } from '../theme';
 import { useBrandColors } from '../theme-context';
-import { AppearanceSettings, Appointment, BusinessSettings, DayNote, Employee, MercadoPagoConnectionStatus, OrganizationAddress, Service, UserProfile } from '../types';
+import { AppearanceSettings, Appointment, BusinessSettings, DayNote, Employee, MercadoPagoConnectionStatus, OrganizationAddress, PaymentSummary, Service, UserProfile } from '../types';
 import { makeEmployeeInviteCode } from '../utils/codes';
 import { dateLabel, monthMatrix, monthTitle, toDateId, weekDays } from '../utils/dates';
 import { appointmentDuration, availableEmployeesForSlot, formatDuration } from '../utils/schedule';
@@ -68,6 +64,10 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
   const [settingsDraft, setSettingsDraft] = useState(settings);
   const [appearanceDraft, setAppearanceDraft] = useState(appearance);
   const [historyDate, setHistoryDate] = useState(toDateId(new Date()));
+  const [reportFrom, setReportFrom] = useState(toDateId(new Date()));
+  const [reportTo, setReportTo] = useState(toDateId(new Date()));
+  const [financeReport, setFinanceReport] = useState<PaymentSummary | null>(null);
+  const [financeReportBusy, setFinanceReportBusy] = useState(false);
   const [businessDraft, setBusinessDraft] = useState<{ name: string; address: OrganizationAddress }>({
     name: profile.organizationName,
     address: emptyAddress,
@@ -88,12 +88,6 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
         name: organization.name,
         address: organization.address ?? emptyAddress,
       });
-    }
-  }, [organization]);
-
-  useEffect(() => {
-    if (organization && !organization.publicCode) {
-      createPublicOrganizationCode(organization.id, organization.name).catch(() => undefined);
     }
   }, [organization]);
 
@@ -126,9 +120,9 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
       active: serviceDraft.active,
     };
     if (serviceDraft.id) {
-      await updateDoc(doc(db, orgPath(profile.organizationId, 'services'), serviceDraft.id), payload);
+      await apiPut(`/organizations/${profile.organizationId}/services/${serviceDraft.id}`, payload);
     } else {
-      await addDoc(collection(db, orgPath(profile.organizationId, 'services')), payload);
+      await apiPost(`/organizations/${profile.organizationId}/services`, payload);
     }
     setServiceDraft(null);
   }
@@ -150,20 +144,11 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
 
     let employeeId = employeeDraft.id;
     if (employeeDraft.id) {
-      await updateDoc(doc(db, orgPath(profile.organizationId, 'employees'), employeeDraft.id), payload);
+      await apiPut(`/organizations/${profile.organizationId}/employees/${employeeDraft.id}`, payload);
     } else {
-      const employeeRef = await addDoc(collection(db, orgPath(profile.organizationId, 'employees')), payload);
+      const employeeRef = await apiPost<{ id: string }>(`/organizations/${profile.organizationId}/employees`, payload);
       employeeId = employeeRef.id;
     }
-
-    await setDoc(doc(db, 'employeeInvites', inviteCode), {
-      code: inviteCode,
-      organizationId: profile.organizationId,
-      organizationName: organization?.name ?? profile.organizationName,
-      employeeId,
-      email: payload.email,
-      used: Boolean(payload.userId),
-    });
     setEmployeeDraft(null);
   }
 
@@ -187,37 +172,7 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
   }
 
   async function deleteEmployee(employee: Employee) {
-    const batch = writeBatch(db);
-    batch.delete(doc(db, orgPath(profile.organizationId, 'employees'), employee.id));
-    if (employee.inviteCode) {
-      batch.delete(doc(db, 'employeeInvites', employee.inviteCode));
-    }
-
-    appointments
-      .filter(
-        (appointment) =>
-          appointment.employeeId === employee.id &&
-          !['completed', 'lost', 'cancelled'].includes(appointment.status),
-      )
-      .forEach((appointment) => {
-        batch.update(doc(db, orgPath(profile.organizationId, 'appointments'), appointment.id), {
-          employeeId: '',
-          status: 'pending',
-        });
-      });
-
-    if (employee.userId) {
-      batch.set(
-        doc(db, 'users', employee.userId),
-        {
-          role: 'client',
-          employeeId: null,
-        },
-        { merge: true },
-      );
-    }
-
-    await batch.commit();
+    await apiDelete(`/organizations/${profile.organizationId}/employees/${employee.id}`);
   }
 
   function confirmDeleteAppointment(appointment: Appointment) {
@@ -239,13 +194,13 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
   function confirmDeleteAppointmentAgain(appointment: Appointment) {
     Alert.alert(
       'Ultima confirmacion',
-      'Esta accion elimina la cita de Firestore y no se puede deshacer desde la app.',
+      'Esta accion elimina la cita de la base de datos y no se puede deshacer desde la app.',
       [
         { text: 'Volver', style: 'cancel' },
         {
           text: 'Eliminar ya',
           style: 'destructive',
-          onPress: () => deleteDoc(doc(db, orgPath(profile.organizationId, 'appointments'), appointment.id)),
+          onPress: () => apiDelete(`/organizations/${profile.organizationId}/appointments/${appointment.id}`),
         },
       ],
     );
@@ -268,7 +223,7 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
       Alert.alert('Falta nota', 'Agrega una nota para identificar el dia especial.');
       return;
     }
-    await addDoc(collection(db, orgPath(profile.organizationId, 'dayNotes')), {
+    await apiPost(`/organizations/${profile.organizationId}/day-notes`, {
       date: draft.date,
       type: draft.type,
       note: draft.note.trim(),
@@ -278,7 +233,7 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
 
   async function addAnnouncement() {
     if (!announcementDraft.title.trim() || !announcementDraft.body.trim()) return;
-    await addDoc(collection(db, orgPath(profile.organizationId, 'announcements')), {
+    await apiPost(`/organizations/${profile.organizationId}/announcements`, {
       title: announcementDraft.title.trim(),
       body: announcementDraft.body.trim(),
       active: true,
@@ -307,16 +262,13 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
       return;
     }
 
-    await setDoc(
-      doc(db, 'organizations', profile.organizationId, 'settings', 'business'),
-      {
-        requireDeposit: Boolean(settingsDraft.requireDeposit),
-        depositPercent,
-        toleranceMinutes,
-        cancellationLimitHours,
-      },
-      { merge: true },
-    );
+    await apiPut(`/organizations/${profile.organizationId}/settings/business`, {
+      ...settingsDraft,
+      requireDeposit: Boolean(settingsDraft.requireDeposit),
+      depositPercent,
+      toleranceMinutes,
+      cancellationLimitHours,
+    });
     Alert.alert('Configuracion guardada', settingsDraft.requireDeposit ? 'El negocio pedira anticipo al apartar citas.' : 'El negocio no pedira anticipo al apartar citas.');
   }
 
@@ -326,17 +278,13 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
       return;
     }
 
-    await setDoc(
-      doc(db, 'organizations', profile.organizationId, 'settings', 'appearance'),
-      {
-        preset: appearanceDraft.preset,
-        displayName: appearanceDraft.displayName.trim(),
-        tagline: appearanceDraft.tagline.trim(),
-        welcomeMessage: appearanceDraft.welcomeMessage.trim(),
-        logoUrl: appearanceDraft.logoUrl ?? '',
-      },
-      { merge: true },
-    );
+    await apiPut(`/organizations/${profile.organizationId}/settings/appearance`, {
+      preset: appearanceDraft.preset,
+      displayName: appearanceDraft.displayName.trim(),
+      tagline: appearanceDraft.tagline.trim(),
+      welcomeMessage: appearanceDraft.welcomeMessage.trim(),
+      logoUrl: apiStoredAssetPath(appearanceDraft.logoUrl),
+    });
     Alert.alert('Apariencia guardada', 'El estilo del negocio fue actualizado.');
   }
 
@@ -352,62 +300,31 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
       allowsEditing: true,
       aspect: [1, 1],
       quality: 0.82,
-      base64: true,
     });
-    if (result.canceled || !result.assets[0]?.base64) return;
+    if (result.canceled || !result.assets[0]?.uri) return;
 
     try {
       const asset = result.assets[0];
-      const base64Logo = asset.base64;
-      if (!base64Logo) return;
       const mimeType = asset.mimeType || 'image/jpeg';
-      let logoUrl = '';
-
-      if (runtimeFeatures.firebaseStorage) {
-        const logoRef = ref(storage, `organizations/${profile.organizationId}/branding/logo.jpg`);
-        await uploadString(logoRef, base64Logo, 'base64', {
-          contentType: mimeType,
-        });
-        logoUrl = await getDownloadURL(logoRef);
-      } else {
-        if (base64Logo.length > 850000) {
-          Alert.alert('Logo muy pesado', 'Elige o recorta una imagen mas pequena. Sin Blaze guardamos una version ligera en Firestore.');
-          return;
-        }
-        logoUrl = `data:${mimeType};base64,${base64Logo}`;
-      }
+      const { logoUrl } = await apiUploadOrganizationLogo({
+        organizationId: profile.organizationId,
+        uri: asset.uri,
+        fileName: asset.fileName || `logo.${mimeType.split('/')[1] || 'jpg'}`,
+        mimeType,
+      });
 
       setAppearanceDraft((current) => ({ ...current, logoUrl }));
-      await setDoc(doc(db, 'organizations', profile.organizationId, 'settings', 'appearance'), { logoUrl }, { merge: true });
-      Alert.alert(
-        'Logo actualizado',
-        runtimeFeatures.firebaseStorage
-          ? 'El logo del negocio fue subido correctamente.'
-          : 'El logo se guardo en Firestore en modo temporal sin Blaze. Para produccion conviene usar Storage.',
-      );
+      Alert.alert('Logo actualizado', 'El logo del negocio fue guardado.');
     } catch (error) {
-      Alert.alert('No se pudo subir el logo', readableFirebaseError(error));
+      Alert.alert('No se pudo subir el logo', readableApiError(error));
     }
   }
 
   async function connectMercadoPago() {
-    if (!runtimeFeatures.firebaseFunctions || !runtimeFeatures.mercadoPagoCheckout) {
-      Alert.alert('Blaze pendiente', noBlazeMessage);
-      return;
-    }
-    try {
-      const url = await createMercadoPagoOAuthUrl(profile.organizationId);
-      await Linking.openURL(url);
-    } catch (error) {
-      Alert.alert('No se pudo conectar', readableFirebaseError(error));
-    }
+    Alert.alert('Pagos automaticos no activos', 'En modo self-hosted los anticipos se confirman manualmente.');
   }
 
   function confirmDisconnectMercadoPago() {
-    if (!runtimeFeatures.firebaseFunctions || !runtimeFeatures.mercadoPagoCheckout) {
-      Alert.alert('Blaze pendiente', noBlazeMessage);
-      return;
-    }
     Alert.alert(
       'Desconectar Mercado Pago',
       'El negocio dejara de recibir anticipos por Mercado Pago hasta que se vuelva a conectar.',
@@ -420,12 +337,37 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
             try {
               await disconnectMercadoPago(profile.organizationId);
             } catch (error) {
-              Alert.alert('No se pudo desconectar', readableFirebaseError(error));
+              Alert.alert('No se pudo desconectar', readableApiError(error));
             }
           },
         },
       ],
     );
+  }
+
+  async function testSqlServerConnection() {
+    try {
+      const status = await checkSqlServerConnection();
+      Alert.alert('SQL Server conectado', `${status.serverName}\nBase: ${status.databaseName}`);
+    } catch (error) {
+      Alert.alert('No se pudo conectar a SQL Server', readableApiError(error));
+    }
+  }
+
+  async function loadFinanceReport() {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(reportFrom) || !/^\d{4}-\d{2}-\d{2}$/.test(reportTo)) {
+      Alert.alert('Rango invalido', 'Usa fechas en formato AAAA-MM-DD.');
+      return;
+    }
+    setFinanceReportBusy(true);
+    try {
+      const report = await apiFinanceReport(profile.organizationId, reportFrom, reportTo);
+      setFinanceReport(report.summary);
+    } catch (error) {
+      Alert.alert('No se pudo cargar el reporte', readableApiError(error));
+    } finally {
+      setFinanceReportBusy(false);
+    }
   }
 
   async function saveSchedule() {
@@ -450,19 +392,16 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
       return;
     }
 
-    await setDoc(
-      doc(db, 'organizations', profile.organizationId, 'settings', 'business'),
-      {
-        businessStart: settingsDraft.businessStart,
-        businessEnd: settingsDraft.businessEnd,
-        breakEnabled: Boolean(settingsDraft.breakEnabled),
-        breakStart: settingsDraft.breakStart,
-        breakEnd: settingsDraft.breakEnd,
-        slotMinutes: Number(settingsDraft.slotMinutes || 60),
-        workingDays: settingsDraft.workingDays?.length ? settingsDraft.workingDays : [1, 2, 3, 4, 5, 6],
-      },
-      { merge: true },
-    );
+    await apiPut(`/organizations/${profile.organizationId}/settings/business`, {
+      ...settingsDraft,
+      businessStart: settingsDraft.businessStart,
+      businessEnd: settingsDraft.businessEnd,
+      breakEnabled: Boolean(settingsDraft.breakEnabled),
+      breakStart: settingsDraft.breakStart,
+      breakEnd: settingsDraft.breakEnd,
+      slotMinutes: Number(settingsDraft.slotMinutes || 60),
+      workingDays: settingsDraft.workingDays?.length ? settingsDraft.workingDays : [1, 2, 3, 4, 5, 6],
+    });
   }
 
   async function saveBusiness() {
@@ -474,26 +413,16 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
       Alert.alert('Falta direccion', 'Completa calle, colonia, ciudad, estado, numero exterior y codigo postal.');
       return;
     }
-    await setDoc(
-      doc(db, 'organizations', profile.organizationId),
-      {
-        name: businessDraft.name.trim(),
-        address: businessDraft.address,
-      },
-      { merge: true },
-    );
-    await setDoc(
-      doc(db, 'users', profile.id),
-      {
-        organizationName: businessDraft.name.trim(),
-      },
-      { merge: true },
-    );
+    await apiPut(`/organizations/${profile.organizationId}`, {
+      name: businessDraft.name.trim(),
+      userName: profile.name,
+      address: businessDraft.address,
+    });
     Alert.alert('Negocio actualizado', 'Los datos del negocio fueron guardados.');
   }
 
   async function markDepositReceived(appointment: Appointment, method: 'cash' | 'transfer') {
-    await updateDoc(doc(db, orgPath(profile.organizationId, 'appointments'), appointment.id), {
+    await apiPatch(`/organizations/${profile.organizationId}/appointments/${appointment.id}`, {
       status: appointment.status === 'pending' ? 'confirmed' : appointment.status,
       paymentStatus: 'paid',
       paymentMethod: method,
@@ -557,9 +486,9 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
                   appointment={appointment}
                   services={services}
                   employees={employees}
-                  onStatus={(status) => updateDoc(doc(db, orgPath(profile.organizationId, 'appointments'), appointment.id), { status })}
+                  onStatus={(status) => apiPatch(`/organizations/${profile.organizationId}/appointments/${appointment.id}`, { status })}
                   onCompletePayment={(method) =>
-                    updateDoc(doc(db, orgPath(profile.organizationId, 'appointments'), appointment.id), {
+                    apiPatch(`/organizations/${profile.organizationId}/appointments/${appointment.id}`, {
                       status: 'completed',
                       servicePaymentMethod: method,
                       servicePaymentStatus: method === 'cash' ? 'paid' : 'pending',
@@ -578,7 +507,7 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
                         <SmallButton
                           label="Avisar demora"
                           onPress={() =>
-                            updateDoc(doc(db, orgPath(profile.organizationId, 'appointments'), appointment.id), {
+                            apiPatch(`/organizations/${profile.organizationId}/appointments/${appointment.id}`, {
                               status: 'waiting',
                               delayMinutes: 10,
                               delayNotice: 'Estamos atendiendo a otro cliente. Te pedimos una disculpa por la demora, en breve te atenderemos.',
@@ -601,7 +530,7 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
                               key={employee.id}
                               label={`Asignar a ${employee.name}`}
                               active={appointment.employeeId === employee.id}
-                              onPress={() => updateDoc(doc(db, orgPath(profile.organizationId, 'appointments'), appointment.id), { employeeId: employee.id })}
+                              onPress={() => apiPatch(`/organizations/${profile.organizationId}/appointments/${appointment.id}`, { employeeId: employee.id })}
                             />
                           ))}
                       </View>
@@ -643,7 +572,7 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
           manualDayDraft={manualDayDraft}
           setManualDayDraft={setManualDayDraft}
           onAddManual={addManualDayNote}
-          onDelete={(id) => deleteDoc(doc(db, orgPath(profile.organizationId, 'dayNotes'), id))}
+          onDelete={(id) => apiDelete(`/organizations/${profile.organizationId}/day-notes/${id}`)}
         />
       ) : null}
 
@@ -661,7 +590,7 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
                   </Text>
                 </View>
                 <IconButton icon="create-outline" onPress={() => setServiceDraft(service)} />
-                <IconButton icon="trash-outline" onPress={() => deleteDoc(doc(db, orgPath(profile.organizationId, 'services'), service.id))} />
+                <IconButton icon="trash-outline" onPress={() => apiDelete(`/organizations/${profile.organizationId}/services/${service.id}`)} />
               </View>
             ))
           ) : (
@@ -719,9 +648,9 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
                 </View>
                 <IconButton
                   icon={announcement.active ? 'eye-outline' : 'eye-off-outline'}
-                  onPress={() => updateDoc(doc(db, orgPath(profile.organizationId, 'announcements'), announcement.id), { active: !announcement.active })}
+                  onPress={() => apiPatch(`/organizations/${profile.organizationId}/announcements/${announcement.id}`, { active: !announcement.active })}
                 />
-                <IconButton icon="trash-outline" onPress={() => deleteDoc(doc(db, orgPath(profile.organizationId, 'announcements'), announcement.id))} />
+                <IconButton icon="trash-outline" onPress={() => apiDelete(`/organizations/${profile.organizationId}/announcements/${announcement.id}`)} />
               </View>
             </View>
           ))}
@@ -733,9 +662,17 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
           connection={mercadoPagoConnection}
           appointments={appointments}
           services={services}
-          backendEnabled={runtimeFeatures.firebaseFunctions && runtimeFeatures.mercadoPagoCheckout}
+          backendEnabled={false}
           onConnect={connectMercadoPago}
           onDisconnect={confirmDisconnectMercadoPago}
+          onTestSqlServer={testSqlServerConnection}
+          reportFrom={reportFrom}
+          reportTo={reportTo}
+          onReportFromChange={setReportFrom}
+          onReportToChange={setReportTo}
+          onLoadFinanceReport={loadFinanceReport}
+          financeReport={financeReport}
+          financeReportBusy={financeReportBusy}
         />
       ) : null}
 
@@ -1040,11 +977,12 @@ function AppearanceForm({
   const palette = getAppearancePalette(appearance);
   const brandColors = useBrandColors();
   const presetKeys = Object.keys(appearancePresets) as AppearanceSettings['preset'][];
+  const logoUri = apiAssetUrl(appearance.logoUrl);
 
   return (
     <Section title="Apariencia del negocio" icon="color-palette-outline">
       <View style={[theme.styles.heroCard, { backgroundColor: palette.primaryDark }]}>
-        {appearance.logoUrl ? <Image source={{ uri: appearance.logoUrl }} style={appearanceStyles.logoPreview} /> : null}
+        {logoUri ? <Image source={{ uri: logoUri }} style={appearanceStyles.logoPreview} /> : null}
         <Text style={[theme.styles.eyebrow, { color: theme.colors.surface }]}>{appearance.displayName || defaultAppearance.displayName}</Text>
         <Text style={[theme.styles.screenTitle, { color: theme.colors.surface }]}>{appearance.tagline || defaultAppearance.tagline}</Text>
         <Text style={[theme.styles.mutedText, { color: 'rgba(255,255,255,0.82)' }]}>{appearance.welcomeMessage || defaultAppearance.welcomeMessage}</Text>
@@ -1110,6 +1048,14 @@ function PaymentsForm({
   backendEnabled,
   onConnect,
   onDisconnect,
+  onTestSqlServer,
+  reportFrom,
+  reportTo,
+  onReportFromChange,
+  onReportToChange,
+  onLoadFinanceReport,
+  financeReport,
+  financeReportBusy,
 }: {
   connection: MercadoPagoConnectionStatus;
   appointments: Appointment[];
@@ -1117,41 +1063,84 @@ function PaymentsForm({
   backendEnabled: boolean;
   onConnect: () => void;
   onDisconnect: () => void;
+  onTestSqlServer: () => void;
+  reportFrom: string;
+  reportTo: string;
+  onReportFromChange: (value: string) => void;
+  onReportToChange: (value: string) => void;
+  onLoadFinanceReport: () => void;
+  financeReport: PaymentSummary | null;
+  financeReportBusy: boolean;
 }) {
   const brandColors = useBrandColors();
   const summary = useMemo(() => buildPaymentSummary(appointments, services), [appointments, services]);
+  const reportSummary = financeReport ?? summary;
   return (
     <Section title="Panel financiero" icon="wallet-outline">
       <View style={theme.styles.statGrid}>
-        <StatCard label="Ingresos" value={`$${summary.totalRevenue}`} helper="Servicios completados o pagados" />
-        <StatCard label="Anticipos" value={`$${summary.deposits}`} helper="Anticipos confirmados" />
-        <StatCard label="Pendiente" value={`$${summary.pendingPayments}`} helper="Por cobrar" />
-        <StatCard label="Comisiones" value={`$${summary.fees}`} helper="Marketplace / pasarela" />
+        <StatCard label="Ingresos" value={`$${Math.round(reportSummary.totalRevenue)}`} helper="Servicios completados o pagados" />
+        <StatCard label="Anticipos" value={`$${Math.round(reportSummary.deposits)}`} helper="Anticipos confirmados" />
+        <StatCard label="Pendiente" value={`$${Math.round(reportSummary.pendingPayments)}`} helper="Por cobrar" />
+        <StatCard label="Comisiones" value={`$${Math.round(reportSummary.fees)}`} helper="Marketplace / pasarela" />
+      </View>
+      <View style={theme.styles.card}>
+        <Text style={[theme.styles.eyebrow, { color: brandColors.primary }]}>Reporte por rango</Text>
+        <Text style={theme.styles.mutedText}>Consulta directamente SQL Server para corte de caja y ventas por periodo.</Text>
+        <View style={theme.styles.row}>
+          <View style={theme.styles.grow}>
+            <LabeledInput label="Desde" helper="AAAA-MM-DD" value={reportFrom} onChangeText={onReportFromChange} />
+          </View>
+          <View style={theme.styles.grow}>
+            <LabeledInput label="Hasta" helper="AAAA-MM-DD" value={reportTo} onChangeText={onReportToChange} />
+          </View>
+        </View>
+        <SmallButton label={financeReportBusy ? 'Cargando...' : 'Cargar reporte'} onPress={onLoadFinanceReport} />
       </View>
       <View style={theme.styles.card}>
         <Text style={theme.styles.sectionTitle}>Metodos de pago</Text>
-        <Text style={theme.styles.mutedText}>Efectivo: ${summary.cash} · Transferencia: ${summary.transfer}</Text>
-        <Text style={theme.styles.mutedText}>Mercado Pago: ${summary.mercadoPago} · SPEI: ${summary.spei} · OXXO: ${summary.oxxo}</Text>
+        <Text style={theme.styles.mutedText}>Efectivo: ${Math.round(reportSummary.cash)} · Transferencia: ${Math.round(reportSummary.transfer)}</Text>
+        <Text style={theme.styles.mutedText}>Mercado Pago: ${Math.round(reportSummary.mercadoPago)} · SPEI: ${Math.round(reportSummary.spei)} · OXXO: ${Math.round(reportSummary.oxxo)}</Text>
+      </View>
+      <View style={theme.styles.card}>
+        <View style={theme.styles.rowBetween}>
+          <View style={theme.styles.grow}>
+            <Text style={[theme.styles.eyebrow, { color: brandColors.primary }]}>SQL Server</Text>
+            <Text style={theme.styles.sectionTitle}>Base operativa local</Text>
+            <Text style={theme.styles.mutedText}>Valida que la API local pueda abrir conexion con la base ServiCitasStudio.</Text>
+          </View>
+          <Ionicons name="server-outline" size={28} color={brandColors.primary} />
+        </View>
+        <SmallButton label="Probar SQL Server" onPress={onTestSqlServer} />
       </View>
       <View style={theme.styles.card}>
         <Text style={theme.styles.sectionTitle}>Ingresos por servicio</Text>
-        {Object.entries(summary.byService).length ? (
-          Object.entries(summary.byService).map(([service, amount]) => (
+        {Object.entries(reportSummary.byService).length ? (
+          Object.entries(reportSummary.byService).map(([service, amount]) => (
             <Text key={service} style={theme.styles.mutedText}>{service}: ${Math.round(amount)}</Text>
           ))
         ) : (
           <EmptyState text="Aun no hay servicios pagados en el periodo cargado." />
         )}
       </View>
+      <View style={theme.styles.card}>
+        <Text style={theme.styles.sectionTitle}>Ingresos por empleado</Text>
+        {Object.entries(reportSummary.byEmployee).length ? (
+          Object.entries(reportSummary.byEmployee).map(([employee, amount]) => (
+            <Text key={employee} style={theme.styles.mutedText}>{employee}: ${Math.round(amount)}</Text>
+          ))
+        ) : (
+          <EmptyState text="Aun no hay ingresos por empleado en el periodo cargado." />
+        )}
+      </View>
 
       <Text style={theme.styles.sectionTitle}>Mercado Pago Marketplace</Text>
       {!backendEnabled ? (
         <View style={[theme.styles.card, { borderColor: brandColors.accent }]}>
-          <Text style={[theme.styles.eyebrow, { color: brandColors.primary }]}>Modo sin Blaze</Text>
+          <Text style={[theme.styles.eyebrow, { color: brandColors.primary }]}>Modo self-hosted</Text>
           <Text style={theme.styles.sectionTitle}>Pagos automaticos desactivados temporalmente</Text>
           <Text style={theme.styles.mutedText}>
             Puedes seguir usando agenda, servicios, empleados, anticipos manuales y confirmacion en tiempo real. Mercado Pago OAuth,
-            webhooks, SPEI/OXXO automatico y Storage quedan para cuando actives Blaze.
+            webhooks y SPEI/OXXO automatico quedan para una integracion posterior de tu API propia.
           </Text>
         </View>
       ) : null}
@@ -1179,7 +1168,7 @@ function PaymentsForm({
             <SmallButton label="Desconectar Mercado Pago" danger onPress={onDisconnect} />
           </>
         ) : (
-          <PrimaryButton icon="link-outline" label={backendEnabled ? 'Conectar Mercado Pago' : 'Activar cuando haya Blaze'} onPress={onConnect} />
+          <PrimaryButton icon="link-outline" label={backendEnabled ? 'Conectar Mercado Pago' : 'Pagos automaticos no activos'} onPress={onConnect} />
         )}
       </View>
 
@@ -1188,7 +1177,7 @@ function PaymentsForm({
         {backendEnabled ? (
           <>
             <Text style={theme.styles.mutedText}>1. El administrador conecta su propia cuenta con OAuth.</Text>
-            <Text style={theme.styles.mutedText}>2. El backend guarda tokens en una zona privada de Firestore.</Text>
+            <Text style={theme.styles.mutedText}>2. El backend guarda tokens en una zona privada de SQL Server.</Text>
             <Text style={theme.styles.mutedText}>3. Cada anticipo se crea con el access_token del negocio dueno de la cita.</Text>
             <Text style={theme.styles.mutedText}>4. Mercado Pago confirma el pago por webhook y la cita se confirma automaticamente.</Text>
           </>

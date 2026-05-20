@@ -1,62 +1,34 @@
-import { onAuthStateChanged } from 'firebase/auth';
-import type { User } from 'firebase/auth';
-import { doc, onSnapshot } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
-import { auth, db } from '../firebase';
-import { UserProfile, UserRole } from '../types';
-
-const allowedRoles: UserRole[] = ['client', 'employee', 'receptionist', 'manager', 'admin', 'owner'];
+import { apiMe } from '../services/api';
+import { subscribeToAuthChanges } from '../services/authEvents';
+import { UserProfile } from '../types';
 
 export function useAuthProfile() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
-  const [authUser, setAuthUser] = useState<User | null>(null);
-  const [missingProfile, setMissingProfile] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    let profileUnsubscribe: (() => void) | undefined;
+    let mounted = true;
 
-    const authUnsubscribe = onAuthStateChanged(auth, (user) => {
-      profileUnsubscribe?.();
-
-      if (!user) {
-        setAuthUser(null);
-        setProfile(null);
-        setMissingProfile(false);
-        setLoading(false);
-        return;
-      }
-
-      setAuthUser(user);
+    async function loadProfile() {
       setLoading(true);
-      profileUnsubscribe = onSnapshot(doc(db, 'users', user.uid), (snapshot) => {
-        const data = snapshot.data();
-        if (!data) {
-          setProfile(null);
-          setMissingProfile(true);
-          setLoading(false);
-          return;
-        }
+      try {
+        const apiProfile = await apiMe();
+        if (mounted) setProfile(apiProfile);
+      } catch {
+        if (mounted) setProfile(null);
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    }
 
-        setMissingProfile(false);
-        setProfile({
-          id: user.uid,
-          name: String(data.name ?? user.email ?? 'Usuario'),
-          email: String(data.email ?? user.email ?? ''),
-          role: allowedRoles.includes(data.role) ? data.role : 'client',
-          organizationId: String(data.organizationId ?? ''),
-          organizationName: String(data.organizationName ?? 'Mi organizacion'),
-          employeeId: data.employeeId ? String(data.employeeId) : undefined,
-        });
-        setLoading(false);
-      });
-    });
-
+    loadProfile();
+    const unsubscribe = subscribeToAuthChanges(loadProfile);
     return () => {
-      profileUnsubscribe?.();
-      authUnsubscribe();
+      mounted = false;
+      unsubscribe();
     };
   }, []);
 
-  return { profile, authUser, missingProfile, loading };
+  return { profile, loading };
 }
