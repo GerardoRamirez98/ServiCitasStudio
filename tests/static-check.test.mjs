@@ -26,6 +26,8 @@ test('rutas criticas sin credenciales estan presentes', () => {
     '/employee-blocks',
     '/reports/finance',
     '/portfolio',
+    '/clients/organizations/search',
+    '/clients/appointments',
   ]) {
     assert.ok(server.includes(route), `falta ruta ${route}`);
   }

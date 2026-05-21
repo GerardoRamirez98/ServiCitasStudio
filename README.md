@@ -27,6 +27,7 @@ npm start
 
 - Autenticacion con JWT y roles por negocio.
 - Registro de negocio con direccion, clientes por codigo publico y empleados por codigo privado.
+- Clientes con multiples negocios seguidos, busqueda por nombre/codigo, cambio de negocio activo y resumen de citas entre negocios.
 - Agenda con servicios, empleados, horarios laborales, descansos, dias especiales y bloqueo de empalmes desde la API.
 - Categorias de servicios, portafolio de trabajos con imagenes y promociones automaticas por fecha/servicio.
 - Historial de clientes con puntos, nivel de recompensa, notas internas y auditoria reciente.

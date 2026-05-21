@@ -48,6 +48,20 @@ GO
 CREATE INDEX IX_Users_OrganizationId ON dbo.Users(OrganizationId);
 GO
 
+CREATE TABLE dbo.ClientOrganizations (
+  ClientId nvarchar(128) NOT NULL,
+  OrganizationId nvarchar(128) NOT NULL,
+  FollowedAt datetime2 NOT NULL CONSTRAINT DF_ClientOrganizations_FollowedAt DEFAULT sysutcdatetime(),
+  LastSelectedAt datetime2 NULL,
+  CONSTRAINT PK_ClientOrganizations PRIMARY KEY (ClientId, OrganizationId),
+  CONSTRAINT FK_ClientOrganizations_Users FOREIGN KEY (ClientId) REFERENCES dbo.Users(Id),
+  CONSTRAINT FK_ClientOrganizations_Organizations FOREIGN KEY (OrganizationId) REFERENCES dbo.Organizations(Id)
+);
+GO
+
+CREATE INDEX IX_ClientOrganizations_OrganizationId ON dbo.ClientOrganizations(OrganizationId, FollowedAt DESC);
+GO
+
 CREATE TABLE dbo.Services (
   Id nvarchar(128) NOT NULL CONSTRAINT PK_Services PRIMARY KEY,
   OrganizationId nvarchar(128) NOT NULL,

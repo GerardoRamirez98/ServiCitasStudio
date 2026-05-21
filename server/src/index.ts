@@ -166,6 +166,22 @@ function userRowToProfile(row: Record<string, unknown>) {
   };
 }
 
+function assertClient(req: express.Request, res: express.Response) {
+  if (req.user?.role !== 'client') {
+    res.status(403).json({ message: 'Esta seccion es solo para clientes.' });
+    return false;
+  }
+  return true;
+}
+
+function organizationLocation(addressJson: unknown) {
+  const address = parseJsonObject(addressJson);
+  return {
+    city: stringValue(address.city),
+    state: stringValue(address.state),
+  };
+}
+
 app.get('/health', async (_req, res) => {
   const pool = await getPool();
   const result = await pool.request().query('SELECT @@SERVERNAME AS serverName, DB_NAME() AS databaseName, SYSDATETIME() AS checkedAt');
@@ -363,6 +379,27 @@ async function ensureDatabaseShape() {
         CreatedAt datetime2 NOT NULL CONSTRAINT DF_AuditLogs_CreatedAt DEFAULT sysutcdatetime(),
         CONSTRAINT FK_AuditLogs_Organizations FOREIGN KEY (OrganizationId) REFERENCES dbo.Organizations(Id)
       );
+    IF OBJECT_ID('dbo.ClientOrganizations', 'U') IS NULL
+      CREATE TABLE dbo.ClientOrganizations (
+        ClientId nvarchar(128) NOT NULL,
+        OrganizationId nvarchar(128) NOT NULL,
+        FollowedAt datetime2 NOT NULL CONSTRAINT DF_ClientOrganizations_FollowedAt DEFAULT sysutcdatetime(),
+        LastSelectedAt datetime2 NULL,
+        CONSTRAINT PK_ClientOrganizations PRIMARY KEY (ClientId, OrganizationId),
+        CONSTRAINT FK_ClientOrganizations_Users FOREIGN KEY (ClientId) REFERENCES dbo.Users(Id),
+        CONSTRAINT FK_ClientOrganizations_Organizations FOREIGN KEY (OrganizationId) REFERENCES dbo.Organizations(Id)
+      );
+    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_ClientOrganizations_OrganizationId')
+      CREATE INDEX IX_ClientOrganizations_OrganizationId ON dbo.ClientOrganizations(OrganizationId, FollowedAt DESC);
+
+    INSERT INTO dbo.ClientOrganizations (ClientId, OrganizationId, LastSelectedAt)
+    SELECT u.Id, u.OrganizationId, sysutcdatetime()
+    FROM dbo.Users u
+    WHERE u.Role = 'client'
+      AND NOT EXISTS (
+        SELECT 1 FROM dbo.ClientOrganizations co
+        WHERE co.ClientId = u.Id AND co.OrganizationId = u.OrganizationId
+      );
   `);
 }
 
@@ -513,6 +550,12 @@ app.post('/auth/register', async (req, res) => {
         .input('userId', sql.NVarChar, userId)
         .query('UPDATE dbo.Employees SET UserId = @userId, UpdatedAt = sysutcdatetime() WHERE Id = @id');
     }
+    if (finalRole === 'client') {
+      await pool.request()
+        .input('clientId', sql.NVarChar, userId)
+        .input('organizationId', sql.NVarChar, organizationId)
+        .query('INSERT INTO dbo.ClientOrganizations (ClientId, OrganizationId, LastSelectedAt) VALUES (@clientId, @organizationId, sysutcdatetime())');
+    }
 
     const profile = { id: userId, name, email, role: finalRole, organizationId, organizationName: finalOrganizationName, employeeId: employeeId ?? undefined };
     res.status(201).json({ token: signToken(profile), profile });
@@ -543,6 +586,161 @@ app.get('/auth/me', requireAuth, async (req, res) => {
     return;
   }
   res.json({ profile: userRowToProfile(result.recordset[0]) });
+});
+
+app.get('/clients/organizations', requireAuth, async (req, res) => {
+  if (!assertClient(req, res)) return;
+  const pool = await getPool();
+  const result = await pool.request()
+    .input('clientId', sql.NVarChar, req.user?.id)
+    .input('activeOrganizationId', sql.NVarChar, req.user?.organizationId)
+    .query(`
+      SELECT o.Id, o.Name, o.PublicCode, o.AddressJson, co.LastSelectedAt
+      FROM dbo.ClientOrganizations co
+      INNER JOIN dbo.Organizations o ON o.Id = co.OrganizationId
+      WHERE co.ClientId = @clientId
+      ORDER BY CASE WHEN o.Id = @activeOrganizationId THEN 0 ELSE 1 END, co.LastSelectedAt DESC, o.Name
+    `);
+  res.json({
+    organizations: result.recordset.map((organization) => ({
+      id: String(organization.Id),
+      name: String(organization.Name),
+      publicCode: organization.PublicCode ? String(organization.PublicCode) : undefined,
+      active: String(organization.Id) === req.user?.organizationId,
+      followed: true,
+      ...organizationLocation(organization.AddressJson),
+    })),
+  });
+});
+
+app.get('/clients/organizations/search', requireAuth, async (req, res) => {
+  if (!assertClient(req, res)) return;
+  const query = stringValue(req.query.query);
+  const code = normalizeCode(query);
+  if (query.length < 2 && code.length < 4) {
+    res.json({ organizations: [] });
+    return;
+  }
+  const pool = await getPool();
+  const result = await pool.request()
+    .input('clientId', sql.NVarChar, req.user?.id)
+    .input('query', sql.NVarChar, `%${query}%`)
+    .input('code', sql.NVarChar, code)
+    .query(`
+      SELECT TOP 20 o.Id, o.Name, o.PublicCode, o.AddressJson,
+        CASE WHEN co.ClientId IS NULL THEN 0 ELSE 1 END AS Followed
+      FROM dbo.Organizations o
+      LEFT JOIN dbo.ClientOrganizations co ON co.OrganizationId = o.Id AND co.ClientId = @clientId
+      WHERE o.PublicCode = @code OR o.Name LIKE @query OR o.Slug LIKE @query
+      ORDER BY CASE WHEN o.PublicCode = @code THEN 0 ELSE 1 END, o.Name
+    `);
+  res.json({
+    organizations: result.recordset.map((organization) => ({
+      id: String(organization.Id),
+      name: String(organization.Name),
+      publicCode: organization.PublicCode ? String(organization.PublicCode) : undefined,
+      active: String(organization.Id) === req.user?.organizationId,
+      followed: Boolean(organization.Followed),
+      ...organizationLocation(organization.AddressJson),
+    })),
+  });
+});
+
+app.get('/clients/appointments', requireAuth, async (req, res) => {
+  if (!assertClient(req, res)) return;
+  const pool = await getPool();
+  const result = await pool.request()
+    .input('clientId', sql.NVarChar, req.user?.id)
+    .query(`
+      SELECT TOP 100 a.Id, a.OrganizationId, o.Name AS OrganizationName, a.AppointmentDate, a.AppointmentTime, a.Status, a.Total
+      FROM dbo.Appointments a
+      INNER JOIN dbo.Organizations o ON o.Id = a.OrganizationId
+      INNER JOIN dbo.ClientOrganizations co ON co.OrganizationId = a.OrganizationId AND co.ClientId = a.ClientId
+      WHERE a.ClientId = @clientId
+      ORDER BY a.AppointmentDate DESC, a.AppointmentTime DESC
+    `);
+  res.json({
+    appointments: result.recordset.map((appointment) => ({
+      id: String(appointment.Id),
+      organizationId: String(appointment.OrganizationId),
+      organizationName: String(appointment.OrganizationName),
+      date: String(appointment.AppointmentDate).slice(0, 10),
+      time: String(appointment.AppointmentTime).slice(0, 5),
+      status: enumValue(appointment.Status, appointmentStatuses, 'pending'),
+      total: numberValue(appointment.Total, 0),
+    })),
+  });
+});
+
+app.post('/clients/organizations', requireAuth, async (req, res) => {
+  if (!assertClient(req, res)) return;
+  const publicCode = normalizeCode(req.body.publicCode);
+  if (!publicCode) {
+    res.status(400).json({ message: 'Ingresa el codigo publico del negocio.' });
+    return;
+  }
+  const pool = await getPool();
+  const organization = await pool.request()
+    .input('publicCode', sql.NVarChar, publicCode)
+    .query('SELECT TOP 1 Id, Name, PublicCode, AddressJson FROM dbo.Organizations WHERE PublicCode = @publicCode');
+  if (!organization.recordset.length) {
+    res.status(404).json({ message: 'No encontramos ese negocio.' });
+    return;
+  }
+  const row = organization.recordset[0];
+  await pool.request()
+    .input('clientId', sql.NVarChar, req.user?.id)
+    .input('organizationId', sql.NVarChar, row.Id)
+    .query(`
+      IF NOT EXISTS (SELECT 1 FROM dbo.ClientOrganizations WHERE ClientId = @clientId AND OrganizationId = @organizationId)
+        INSERT INTO dbo.ClientOrganizations (ClientId, OrganizationId) VALUES (@clientId, @organizationId);
+    `);
+  res.status(201).json({
+    organization: {
+      id: String(row.Id),
+      name: String(row.Name),
+      publicCode: String(row.PublicCode),
+      active: String(row.Id) === req.user?.organizationId,
+      followed: true,
+      ...organizationLocation(row.AddressJson),
+    },
+  });
+});
+
+app.post('/clients/organizations/:organizationId/select', requireAuth, async (req, res) => {
+  if (!assertClient(req, res)) return;
+  const pool = await getPool();
+  const organization = await pool.request()
+    .input('clientId', sql.NVarChar, req.user?.id)
+    .input('organizationId', sql.NVarChar, req.params.organizationId)
+    .query(`
+      SELECT TOP 1 o.Id, o.Name
+      FROM dbo.ClientOrganizations co
+      INNER JOIN dbo.Organizations o ON o.Id = co.OrganizationId
+      WHERE co.ClientId = @clientId AND co.OrganizationId = @organizationId
+    `);
+  if (!organization.recordset.length) {
+    res.status(404).json({ message: 'Primero sigue ese negocio para abrirlo.' });
+    return;
+  }
+  const row = organization.recordset[0];
+  await pool.request()
+    .input('clientId', sql.NVarChar, req.user?.id)
+    .input('organizationId', sql.NVarChar, row.Id)
+    .input('organizationName', sql.NVarChar, row.Name)
+    .query(`
+      UPDATE dbo.Users
+      SET OrganizationId = @organizationId, OrganizationName = @organizationName, UpdatedAt = sysutcdatetime()
+      WHERE Id = @clientId AND Role = 'client';
+      UPDATE dbo.ClientOrganizations
+      SET LastSelectedAt = sysutcdatetime()
+      WHERE ClientId = @clientId AND OrganizationId = @organizationId;
+    `);
+  const user = await pool.request()
+    .input('id', sql.NVarChar, req.user?.id)
+    .query('SELECT TOP 1 * FROM dbo.Users WHERE Id = @id');
+  const profile = userRowToProfile(user.recordset[0]);
+  res.json({ token: signToken({ id: profile.id, name: profile.name, role: profile.role, organizationId: profile.organizationId }), profile });
 });
 
 app.get('/organizations/:id/bootstrap', requireAuth, async (req, res) => {

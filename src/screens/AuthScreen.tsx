@@ -78,7 +78,7 @@ export function AuthScreen() {
       <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', padding: 20, gap: 14 }}>
         <Text style={theme.styles.eyebrow}>ServiCitas multi-negocio</Text>
         <Text style={theme.styles.screenTitle}>{isRegister ? 'Crear cuenta' : 'Iniciar sesion'}</Text>
-        <Text style={theme.styles.mutedText}>Cada organizacion tiene su agenda, empleados, servicios y clientes separados.</Text>
+        <Text style={theme.styles.mutedText}>Cada negocio conserva su agenda separada; los clientes pueden seguir varios desde una sola cuenta.</Text>
 
         {isRegister ? (
           <>
@@ -131,7 +131,7 @@ export function AuthScreen() {
             ) : (
               <LabeledInput
                 label="Codigo publico del negocio"
-                helper="Lo comparte el negocio para que puedas agendar."
+                helper="Elige el primer negocio. Despues podras buscar y seguir mas desde tu cuenta."
                 placeholder="Codigo del negocio ej. BARBER123"
                 value={organizationCode}
                 onChangeText={(value) => setOrganizationCode(normalizeCode(value))}
@@ -169,7 +169,7 @@ function RoleHelp({ role, adminMode }: { role: UserRole; adminMode: 'create' | '
       <View style={theme.styles.card}>
         <Text style={theme.styles.sectionTitle}>Registro de cliente</Text>
         <Text style={theme.styles.mutedText}>
-          Usa el codigo publico del negocio, por ejemplo BRBRSH383. Ese codigo lo comparte el administrador o la barberia.
+          Usa el codigo publico de tu primer negocio, por ejemplo BRBRSH383. Despues podras buscar y seguir mas negocios sin crear otra cuenta.
         </Text>
       </View>
     );

@@ -21,6 +21,26 @@ export type Organization = {
   address?: OrganizationAddress;
 };
 
+export type ClientOrganization = {
+  id: string;
+  name: string;
+  publicCode?: string;
+  active?: boolean;
+  followed?: boolean;
+  city?: string;
+  state?: string;
+};
+
+export type ClientAppointmentOverview = {
+  id: string;
+  organizationId: string;
+  organizationName: string;
+  date: string;
+  time: string;
+  status: AppointmentStatus;
+  total: number;
+};
+
 export type OrganizationAddress = {
   street: string;
   neighborhood: string;

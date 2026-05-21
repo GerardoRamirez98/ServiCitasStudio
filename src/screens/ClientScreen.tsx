@@ -5,15 +5,15 @@ import { AppointmentCard } from '../components/AppointmentCard';
 import { runtimeFeatures } from '../config/features';
 import { useOrganizationData } from '../hooks/useOrganizationData';
 import { createAppointment } from '../services/appointments';
-import { apiPatch } from '../services/api';
+import { apiClientAppointments, apiClientOrganizations, apiFollowClientOrganization, apiPatch, apiSearchClientOrganizations, apiSelectClientOrganization } from '../services/api';
 import { readableApiError } from '../services/errors';
 import { createDepositPreference } from '../services/payments';
 import { getAppearancePalette, theme } from '../theme';
 import { useBrandColors } from '../theme-context';
-import { Appointment, BusinessSettings, PaymentMethod, UserProfile } from '../types';
+import { Appointment, BusinessSettings, ClientAppointmentOverview, ClientOrganization, PaymentMethod, UserProfile } from '../types';
 import { dateLabel, isWorkingDate, nextDates } from '../utils/dates';
 import { addMinutes, availableEmployeesForSlot, availableTimeSlots, selectedServiceSummary } from '../utils/schedule';
-import { EmptyState, LabeledInput, Pill, PrimaryButton, Section, SmallButton } from '../components/ui';
+import { EmptyState, LabeledInput, Pill, PrimaryButton, Section, SmallButton, StatusBadge } from '../components/ui';
 
 function getAppointmentStart(appointment: Appointment) {
   return new Date(`${appointment.date}T${appointment.time}:00`);
@@ -43,6 +43,11 @@ export function ClientScreen({ profile }: { profile: UserProfile }) {
   const [depositPaymentMethod, setDepositPaymentMethod] = useState<PaymentMethod>(automaticPaymentsEnabled ? 'mercado_pago' : 'transfer');
   const [cancelDraft, setCancelDraft] = useState<Appointment | null>(null);
   const [cancelReason, setCancelReason] = useState('');
+  const [followedOrganizations, setFollowedOrganizations] = useState<ClientOrganization[]>([]);
+  const [clientAppointments, setClientAppointments] = useState<ClientAppointmentOverview[]>([]);
+  const [organizationQuery, setOrganizationQuery] = useState('');
+  const [organizationResults, setOrganizationResults] = useState<ClientOrganization[]>([]);
+  const [organizationBusy, setOrganizationBusy] = useState(false);
   const dates = useMemo(() => nextDates(14), []);
   const activeServices = services.filter((service) => service.active);
   const visibleCategories = serviceCategories.filter((category) => category.active);
@@ -80,6 +85,18 @@ export function ClientScreen({ profile }: { profile: UserProfile }) {
     }
   }, [automaticPaymentsEnabled, depositPaymentMethod]);
 
+  useEffect(() => {
+    Promise.all([apiClientOrganizations(), apiClientAppointments()])
+      .then(([organizations, appointmentsAcrossBusinesses]) => {
+        setFollowedOrganizations(organizations);
+        setClientAppointments(appointmentsAcrossBusinesses);
+      })
+      .catch(() => {
+        setFollowedOrganizations([]);
+        setClientAppointments([]);
+      });
+  }, [profile.organizationId]);
+
   function toggleService(id: string) {
     setSelectedServiceIds((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
   }
@@ -91,6 +108,46 @@ export function ClientScreen({ profile }: { profile: UserProfile }) {
     }
     setCancelReason('');
     setCancelDraft(appointment);
+  }
+
+  async function searchOrganizations() {
+    if (organizationQuery.trim().length < 2) {
+      Alert.alert('Busqueda corta', 'Escribe al menos 2 letras o el codigo del negocio.');
+      return;
+    }
+    setOrganizationBusy(true);
+    try {
+      setOrganizationResults(await apiSearchClientOrganizations(organizationQuery.trim()));
+    } catch (error) {
+      Alert.alert('No se pudo buscar', readableApiError(error));
+    } finally {
+      setOrganizationBusy(false);
+    }
+  }
+
+  async function followOrganization(organization: ClientOrganization) {
+    if (!organization.publicCode) return;
+    setOrganizationBusy(true);
+    try {
+      const followed = await apiFollowClientOrganization(organization.publicCode);
+      setOrganizationResults((current) => current.map((item) => item.id === followed.id ? { ...item, followed: true } : item));
+      setFollowedOrganizations(await apiClientOrganizations());
+    } catch (error) {
+      Alert.alert('No se pudo seguir', readableApiError(error));
+    } finally {
+      setOrganizationBusy(false);
+    }
+  }
+
+  async function selectOrganization(organization: ClientOrganization) {
+    if (organization.id === profile.organizationId) return;
+    setOrganizationBusy(true);
+    try {
+      await apiSelectClientOrganization(organization.id);
+    } catch (error) {
+      Alert.alert('No se pudo abrir', readableApiError(error));
+      setOrganizationBusy(false);
+    }
   }
 
   async function cancelAppointment() {
@@ -196,7 +253,64 @@ export function ClientScreen({ profile }: { profile: UserProfile }) {
         <Text style={[theme.styles.mutedText, { color: 'rgba(255,255,255,0.82)' }]}>{appearance.welcomeMessage}</Text>
       </View>
 
+      <Section title="Mis negocios" icon="storefront-outline">
+        <View style={theme.styles.card}>
+          <Text style={theme.styles.sectionTitle}>Buscar negocios</Text>
+          <LabeledInput
+            label="Nombre o codigo"
+            helper="Sigue varios negocios y cambia entre ellos sin crear otra cuenta."
+            placeholder="Ej. Studio Centro o STU1234"
+            value={organizationQuery}
+            onChangeText={setOrganizationQuery}
+            autoCapitalize="none"
+          />
+          <PrimaryButton icon="search" label={organizationBusy ? 'Buscando...' : 'Buscar'} onPress={searchOrganizations} />
+          {organizationResults.length ? (
+            <View style={{ gap: 8 }}>
+              {organizationResults.map((organization) => (
+                <ClientOrganizationRow
+                  key={organization.id}
+                  organization={organization}
+                  busy={organizationBusy}
+                  onFollow={() => followOrganization(organization)}
+                  onSelect={() => selectOrganization(organization)}
+                />
+              ))}
+            </View>
+          ) : null}
+        </View>
+        {followedOrganizations.length ? (
+          <View style={{ gap: 8 }}>
+            {followedOrganizations.map((organization) => (
+              <ClientOrganizationRow
+                key={organization.id}
+                organization={organization}
+                busy={organizationBusy}
+                onFollow={() => followOrganization(organization)}
+                onSelect={() => selectOrganization(organization)}
+              />
+            ))}
+          </View>
+        ) : (
+          <EmptyState text="Cuando sigas negocios apareceran aqui." />
+        )}
+      </Section>
+
       <Section title="Mis citas en tiempo real" icon="time-outline">
+        {clientAppointments.length ? (
+          <View style={{ gap: 8 }}>
+            {clientAppointments.slice(0, 6).map((appointment) => (
+              <View key={`${appointment.organizationId}-${appointment.id}`} style={theme.styles.rowCard}>
+                <View style={theme.styles.grow}>
+                  <Text style={theme.styles.sectionTitle}>{appointment.organizationName}</Text>
+                  <Text style={theme.styles.mutedText}>{dateLabel(appointment.date)} · {appointment.time} · Total ${appointment.total}</Text>
+                </View>
+                <StatusBadge status={appointment.status} />
+              </View>
+            ))}
+          </View>
+        ) : null}
+        <Text style={theme.styles.mutedText}>Detalle del negocio abierto:</Text>
         {myAppointments.length ? (
           myAppointments.map((appointment) => (
             <AppointmentCard
@@ -366,6 +480,35 @@ export function ClientScreen({ profile }: { profile: UserProfile }) {
         onConfirm={cancelAppointment}
       />
     </ScrollView>
+  );
+}
+
+function ClientOrganizationRow({
+  organization,
+  busy,
+  onFollow,
+  onSelect,
+}: {
+  organization: ClientOrganization;
+  busy: boolean;
+  onFollow: () => void;
+  onSelect: () => void;
+}) {
+  const location = [organization.city, organization.state].filter(Boolean).join(', ');
+  return (
+    <View style={theme.styles.rowCard}>
+      <View style={theme.styles.grow}>
+        <Text style={theme.styles.sectionTitle}>{organization.name}</Text>
+        <Text style={theme.styles.mutedText}>{[organization.publicCode, location].filter(Boolean).join(' · ') || 'Negocio ServiCitas'}</Text>
+      </View>
+      {organization.active ? (
+        <Pill label="Activo" active onPress={() => undefined} disabled />
+      ) : organization.followed ? (
+        <SmallButton label={busy ? 'Abriendo...' : 'Abrir'} onPress={onSelect} />
+      ) : (
+        <SmallButton label={busy ? 'Guardando...' : 'Seguir'} onPress={onFollow} />
+      )}
+    </View>
   );
 }
 

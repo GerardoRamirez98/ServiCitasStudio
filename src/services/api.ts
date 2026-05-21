@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { OrganizationAddress, PaymentSummary, UserProfile, UserRole } from '../types';
+import { ClientAppointmentOverview, ClientOrganization, OrganizationAddress, PaymentSummary, UserProfile, UserRole } from '../types';
 import { notifyAuthChanged } from './authEvents';
 import { notifyOrganizationDataChanged } from './dataEvents';
 
@@ -187,6 +187,35 @@ export async function apiMe() {
 export async function apiLogout() {
   await AsyncStorage.removeItem(tokenKey);
   notifyAuthChanged();
+}
+
+export async function apiClientOrganizations() {
+  const payload = await apiGet<{ organizations: ClientOrganization[] }>('/clients/organizations');
+  return payload.organizations;
+}
+
+export async function apiSearchClientOrganizations(query: string) {
+  const payload = await apiGet<{ organizations: ClientOrganization[] }>(`/clients/organizations/search?query=${encodeURIComponent(query)}`);
+  return payload.organizations;
+}
+
+export async function apiClientAppointments() {
+  const payload = await apiGet<{ appointments: ClientAppointmentOverview[] }>('/clients/appointments');
+  return payload.appointments;
+}
+
+export async function apiFollowClientOrganization(publicCode: string) {
+  const payload = await apiPost<{ organization: ClientOrganization }>('/clients/organizations', { publicCode });
+  notifyOrganizationDataChanged();
+  return payload.organization;
+}
+
+export async function apiSelectClientOrganization(organizationId: string) {
+  const payload = await apiPost<AuthResponse>(`/clients/organizations/${organizationId}/select`, {});
+  await AsyncStorage.setItem(tokenKey, payload.token);
+  notifyAuthChanged();
+  notifyOrganizationDataChanged();
+  return payload.profile;
 }
 
 export async function apiOrganizationBootstrap(organizationId: string) {
