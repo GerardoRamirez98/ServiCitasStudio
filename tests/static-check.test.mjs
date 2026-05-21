@@ -30,3 +30,11 @@ test('rutas criticas sin credenciales estan presentes', () => {
     assert.ok(server.includes(route), `falta ruta ${route}`);
   }
 });
+
+test('agenda valida horarios, permisos y paginacion', () => {
+  const server = readFileSync('server/src/index.ts', 'utf8');
+  assert.ok(server.includes('employeeScheduleAllowsSlot'), 'falta validacion de horario por empleado');
+  assert.ok(server.includes('assertOrgScheduler'), 'falta permiso de agenda completa');
+  assert.ok(server.includes("app.get('/organizations/:organizationId/appointments'"), 'falta paginacion de citas');
+  assert.ok(server.includes('OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY'), 'falta consulta paginada');
+});

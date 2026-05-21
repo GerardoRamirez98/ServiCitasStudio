@@ -1,5 +1,5 @@
 import { Appointment, Employee, EmployeeBlock, Service } from '../types';
-import { buildTimeSlots, isWorkingDate } from './dates';
+import { buildTimeSlots, dayOfWeek, isWorkingDate } from './dates';
 
 type ScheduleSettings = Parameters<typeof buildTimeSlots>[0];
 
@@ -98,19 +98,12 @@ export function availableTimeSlots(
   employeeBlocks: EmployeeBlock[] = [],
 ) {
   if (!isWorkingDate(date, settings)) return [];
-  const closeTime = parseTime(settings.businessEnd);
   const activeEmployees = employees.filter((employee) => employee.active && (!forcedEmployeeId || employee.id === forcedEmployeeId));
-  return buildTimeSlots(settings).filter((time) => {
+  const employeeSlots = new Set(activeEmployees.flatMap((employee) => buildEmployeeTimeSlots(settings, employee, date)));
+  return [...employeeSlots].sort().filter((time) => {
     const slotStart = parseTime(time);
-    const slotEnd = slotStart + duration;
     if (!activeEmployees.length) return false;
-    if (slotEnd > closeTime) return false;
-    if (settings.breakEnabled) {
-      const breakStart = parseTime(settings.breakStart);
-      const breakEnd = parseTime(settings.breakEnd);
-      if (breakStart < breakEnd && slotStart < breakEnd && slotEnd > breakStart) return false;
-    }
-    return activeEmployees.some((employee) => employeeIsAvailable(employee.id, date, time, duration, appointments, services, undefined, employeeBlocks));
+    return activeEmployees.some((employee) => employeeCanTakeSlot(settings, employee, date, slotStart, duration) && employeeIsAvailable(employee.id, date, time, duration, appointments, services, undefined, employeeBlocks));
   });
 }
 
@@ -123,10 +116,36 @@ export function availableEmployeesForSlot(
   duration: number,
   ignoreAppointmentId?: string,
   employeeBlocks: EmployeeBlock[] = [],
+  settings?: ScheduleSettings,
 ) {
   return employees.filter(
-    (employee) => employee.active && employeeIsAvailable(employee.id, date, time, duration, appointments, services, ignoreAppointmentId, employeeBlocks),
+    (employee) =>
+      employee.active &&
+      (!settings || employeeCanTakeSlot(settings, employee, date, parseTime(time), duration)) &&
+      employeeIsAvailable(employee.id, date, time, duration, appointments, services, ignoreAppointmentId, employeeBlocks),
   );
+}
+
+export function employeeCanTakeSlot(settings: ScheduleSettings, employee: Employee, date: string, slotStart: number, duration: number) {
+  const day = String(dayOfWeek(date));
+  const override = employee.scheduleOverrides?.[day];
+  if (override?.enabled === false) return false;
+  const start = parseTime(override?.start || settings.businessStart);
+  const end = parseTime(override?.end || settings.businessEnd);
+  const slotEnd = slotStart + duration;
+  if (slotStart < start || slotEnd > end) return false;
+  const breakStart = parseTime(override?.breakStart || settings.breakStart);
+  const breakEnd = parseTime(override?.breakEnd || settings.breakEnd);
+  const usesBreak = Boolean(override?.breakStart && override?.breakEnd) || settings.breakEnabled;
+  return !(usesBreak && breakStart < breakEnd && slotStart < breakEnd && slotEnd > breakStart);
+}
+
+function buildEmployeeTimeSlots(settings: ScheduleSettings, employee: Employee, date: string) {
+  const day = String(dayOfWeek(date));
+  const override = employee.scheduleOverrides?.[day];
+  if (override?.enabled === false) return [];
+  if (!override) return buildTimeSlots(settings);
+  return buildTimeSlots({ ...settings, businessStart: override.start || settings.businessStart, businessEnd: override.end || settings.businessEnd });
 }
 
 function parseTime(value: string) {

@@ -15,6 +15,7 @@ const id = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 20);
 const codeId = customAlphabet('ABCDEFGHJKLMNPQRSTUVWXYZ23456789', 8);
 const allowedRoles: UserRole[] = ['client', 'employee', 'receptionist', 'manager', 'admin', 'owner'];
 const adminRoles: UserRole[] = ['owner', 'admin', 'manager'];
+const schedulerRoles: UserRole[] = ['owner', 'admin', 'manager', 'receptionist'];
 const staffRoles: UserRole[] = ['owner', 'admin', 'manager', 'receptionist', 'employee'];
 const appointmentStatuses = ['pending', 'confirmed', 'waiting', 'in_service', 'completed', 'lost', 'cancelled'];
 const paymentStatuses = ['not_required', 'pending', 'paid', 'offline', 'refunded'];
@@ -94,6 +95,39 @@ function appointmentDuration(row: Record<string, unknown>) {
   return numberValue(row.Duration, 60) || 60;
 }
 
+function parseJsonObject(value: unknown) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(String(value ?? '{}'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+
+function weekdayFromDate(date: string) {
+  return new Date(`${date}T12:00:00Z`).getUTCDay();
+}
+
+function employeeScheduleAllowsSlot(employee: Record<string, unknown>, settings: Record<string, unknown> | undefined, date: string, startTime: string, duration: number) {
+  const start = parseTimeToMinutes(startTime);
+  if (start === null) return false;
+  const overrides = parseJsonObject(employee.ScheduleOverridesJson);
+  const override = parseJsonObject(overrides[String(weekdayFromDate(date))]);
+  if (override.enabled === false) return false;
+
+  const businessStart = parseTimeToMinutes(override.start ?? settings?.BusinessStart ?? '09:00');
+  const businessEnd = parseTimeToMinutes(override.end ?? settings?.BusinessEnd ?? '18:00');
+  if (businessStart === null || businessEnd === null || start < businessStart || start + duration > businessEnd) return false;
+
+  const businessBreakEnabled = Boolean(settings?.BreakEnabled);
+  const hasOverrideBreak = parseTimeToMinutes(override.breakStart) !== null && parseTimeToMinutes(override.breakEnd) !== null;
+  if (!businessBreakEnabled && !hasOverrideBreak) return true;
+  const breakStart = parseTimeToMinutes(override.breakStart ?? settings?.BreakStart);
+  const breakEnd = parseTimeToMinutes(override.breakEnd ?? settings?.BreakEnd);
+  return breakStart === null || breakEnd === null || breakStart >= breakEnd || start >= breakEnd || start + duration <= breakStart;
+}
+
 function emptyPaymentSummary() {
   return {
     totalRevenue: 0,
@@ -164,8 +198,21 @@ function assertOrgStaff(req: express.Request, res: express.Response) {
   return true;
 }
 
+function assertOrgScheduler(req: express.Request, res: express.Response) {
+  if (!assertSameOrg(req, res)) return false;
+  if (!req.user?.role || !schedulerRoles.includes(req.user.role)) {
+    res.status(403).json({ message: 'No tienes permisos para operar la agenda completa.' });
+    return false;
+  }
+  return true;
+}
+
 function isStaff(req: express.Request) {
   return Boolean(req.user?.role && staffRoles.includes(req.user.role));
+}
+
+function isScheduler(req: express.Request) {
+  return Boolean(req.user?.role && schedulerRoles.includes(req.user.role));
 }
 
 function localUploadPathFromUrl(value: unknown) {
@@ -510,7 +557,17 @@ app.get('/organizations/:id/bootstrap', requireAuth, async (req, res) => {
   const serviceCategories = await pool.request().input('id', sql.NVarChar, req.params.id).query('SELECT * FROM dbo.ServiceCategories WHERE OrganizationId = @id ORDER BY SortOrder, Name');
   const services = await pool.request().input('id', sql.NVarChar, req.params.id).query('SELECT * FROM dbo.Services WHERE OrganizationId = @id ORDER BY Name');
   const employees = await pool.request().input('id', sql.NVarChar, req.params.id).query('SELECT * FROM dbo.Employees WHERE OrganizationId = @id ORDER BY Name');
-  const appointments = await pool.request().input('id', sql.NVarChar, req.params.id).query('SELECT TOP 1000 * FROM dbo.Appointments WHERE OrganizationId = @id ORDER BY AppointmentDate DESC, AppointmentTime DESC');
+  const appointments = req.user?.role === 'client'
+    ? await pool.request().input('id', sql.NVarChar, req.params.id).input('clientId', sql.NVarChar, req.user.id).query('SELECT TOP 250 * FROM dbo.Appointments WHERE OrganizationId = @id AND ClientId = @clientId ORDER BY AppointmentDate DESC, AppointmentTime DESC')
+    : req.user?.role === 'employee'
+      ? await pool.request().input('id', sql.NVarChar, req.params.id).input('userId', sql.NVarChar, req.user.id).query(`
+        SELECT TOP 250 a.*
+        FROM dbo.Appointments a
+        INNER JOIN dbo.Employees e ON e.Id = a.EmployeeId AND e.OrganizationId = a.OrganizationId
+        WHERE a.OrganizationId = @id AND e.UserId = @userId
+        ORDER BY a.AppointmentDate DESC, a.AppointmentTime DESC
+      `)
+      : await pool.request().input('id', sql.NVarChar, req.params.id).query('SELECT TOP 250 * FROM dbo.Appointments WHERE OrganizationId = @id ORDER BY AppointmentDate DESC, AppointmentTime DESC');
   const dayNotes = await pool.request().input('id', sql.NVarChar, req.params.id).query('SELECT * FROM dbo.DayNotes WHERE OrganizationId = @id ORDER BY NoteDate');
   const announcements = await pool.request().input('id', sql.NVarChar, req.params.id).query('SELECT * FROM dbo.Announcements WHERE OrganizationId = @id ORDER BY Title');
   const portfolioItems = await pool.request().input('id', sql.NVarChar, req.params.id).query('SELECT * FROM dbo.PortfolioItems WHERE OrganizationId = @id ORDER BY CreatedAt DESC');
@@ -528,17 +585,49 @@ app.get('/organizations/:id/bootstrap', requireAuth, async (req, res) => {
     employees: employees.recordset,
     appointments: appointments.recordset,
     dayNotes: dayNotes.recordset,
-    announcements: announcements.recordset,
+    announcements: req.user?.role === 'client' ? announcements.recordset.filter((announcement) => ['clients', 'all'].includes(String(announcement.Audience ?? 'all'))) : announcements.recordset,
     portfolioItems: portfolioItems.recordset,
     promotions: promotions.recordset,
-    clientHistories: clientHistories.recordset,
-    employeeBlocks: employeeBlocks.recordset,
-    auditLogs: auditLogs.recordset,
+    clientHistories: isStaff(req) ? clientHistories.recordset : [],
+    employeeBlocks: isStaff(req) ? employeeBlocks.recordset : [],
+    auditLogs: req.user?.role && adminRoles.includes(req.user.role) ? auditLogs.recordset : [],
+  });
+});
+
+app.get('/organizations/:organizationId/appointments', requireAuth, async (req, res) => {
+  if (!assertOrgStaff(req, res)) return;
+  const page = Math.max(1, Math.floor(numberValue(req.query.page, 1)));
+  const pageSize = Math.min(200, Math.max(10, Math.floor(numberValue(req.query.pageSize, 50))));
+  const offset = (page - 1) * pageSize;
+  const pool = await getPool();
+  const result = await pool.request()
+    .input('organizationId', sql.NVarChar, req.params.organizationId)
+    .input('userId', sql.NVarChar, req.user?.id)
+    .input('role', sql.NVarChar, req.user?.role)
+    .input('offset', sql.Int, offset)
+    .input('pageSize', sql.Int, pageSize)
+    .query(`
+      SELECT *, COUNT(*) OVER() AS TotalCount
+      FROM dbo.Appointments
+      WHERE OrganizationId = @organizationId
+        AND (
+          @userId IS NULL
+          OR @role <> 'employee'
+          OR EmployeeId IN (SELECT Id FROM dbo.Employees WHERE UserId = @userId AND OrganizationId = @organizationId)
+        )
+      ORDER BY AppointmentDate DESC, AppointmentTime DESC
+      OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY
+    `);
+  res.json({
+    items: result.recordset,
+    page,
+    pageSize,
+    total: Number(result.recordset[0]?.TotalCount ?? 0),
   });
 });
 
 app.get('/organizations/:organizationId/reports/finance', requireAuth, async (req, res) => {
-  if (!assertOrgStaff(req, res)) return;
+  if (!assertOrgAdmin(req, res)) return;
   const from = stringValue(req.query.from);
   const to = stringValue(req.query.to);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
@@ -1010,7 +1099,7 @@ app.delete('/organizations/:organizationId/promotions/:promotionId', requireAuth
 });
 
 app.put('/organizations/:organizationId/client-histories/:clientId', requireAuth, async (req, res) => {
-  if (!assertOrgStaff(req, res)) return;
+  if (!assertOrgScheduler(req, res)) return;
   const pool = await getPool();
   await pool.request()
     .input('organizationId', sql.NVarChar, req.params.organizationId)
@@ -1030,7 +1119,7 @@ app.put('/organizations/:organizationId/client-histories/:clientId', requireAuth
 });
 
 app.post('/organizations/:organizationId/employee-blocks', requireAuth, async (req, res) => {
-  if (!assertOrgStaff(req, res)) return;
+  if (!assertOrgScheduler(req, res)) return;
   const blockId = id();
   const date = stringValue(req.body.date);
   const startsAt = stringValue(req.body.startsAt);
@@ -1055,7 +1144,7 @@ app.post('/organizations/:organizationId/employee-blocks', requireAuth, async (r
 });
 
 app.delete('/organizations/:organizationId/employee-blocks/:blockId', requireAuth, async (req, res) => {
-  if (!assertOrgStaff(req, res)) return;
+  if (!assertOrgScheduler(req, res)) return;
   const pool = await getPool();
   await pool.request()
     .input('id', sql.NVarChar, req.params.blockId)
@@ -1193,9 +1282,27 @@ app.post('/organizations/:organizationId/appointments', requireAuth, async (req,
     .request()
     .input('id', sql.NVarChar, employeeId)
     .input('organizationId', sql.NVarChar, organizationId)
-    .query('SELECT Id, Active FROM dbo.Employees WHERE Id = @id AND OrganizationId = @organizationId');
+    .query('SELECT Id, Active, ScheduleOverridesJson FROM dbo.Employees WHERE Id = @id AND OrganizationId = @organizationId');
   if (!employee.recordset.length || !Boolean(employee.recordset[0].Active)) {
     res.status(400).json({ message: 'El empleado seleccionado no esta disponible.' });
+    return;
+  }
+  if (source === 'manual' && req.user?.role === 'employee') {
+    const ownEmployee = await pool.request()
+      .input('userId', sql.NVarChar, req.user.id)
+      .input('organizationId', sql.NVarChar, organizationId)
+      .query('SELECT TOP 1 Id FROM dbo.Employees WHERE UserId = @userId AND OrganizationId = @organizationId');
+    if (String(ownEmployee.recordset[0]?.Id ?? '') !== employeeId) {
+      res.status(403).json({ message: 'Solo puedes crear citas manuales para tu propia agenda.' });
+      return;
+    }
+  }
+  const settings = await pool
+    .request()
+    .input('organizationId', sql.NVarChar, organizationId)
+    .query('SELECT TOP 1 * FROM dbo.BusinessSettings WHERE OrganizationId = @organizationId');
+  if (!employeeScheduleAllowsSlot(employee.recordset[0], settings.recordset[0], date, time, duration)) {
+    res.status(409).json({ message: 'Ese horario queda fuera del horario del empleado.' });
     return;
   }
   const sameDayAppointments = await pool
@@ -1328,11 +1435,38 @@ app.patch('/organizations/:organizationId/appointments/:appointmentId', requireA
       return;
     }
   }
+  if (req.user?.role === 'employee') {
+    const employee = await pool.request()
+      .input('userId', sql.NVarChar, req.user.id)
+      .input('organizationId', sql.NVarChar, req.params.organizationId)
+      .query('SELECT TOP 1 Id FROM dbo.Employees WHERE UserId = @userId AND OrganizationId = @organizationId');
+    const ownEmployeeId = String(employee.recordset[0]?.Id ?? '');
+    const restrictedEmployeeFields = ['date', 'time', 'employeeId', 'serviceIds', 'duration', 'total', 'subtotal', 'discountAmount', 'specialPrice', 'discountReason'];
+    if (!ownEmployeeId || String(row.EmployeeId) !== ownEmployeeId || restrictedEmployeeFields.some((field) => Object.prototype.hasOwnProperty.call(req.body, field))) {
+      res.status(403).json({ message: 'Solo puedes actualizar el avance de tus propias citas.' });
+      return;
+    }
+  }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(nextDate) || parseTimeToMinutes(nextTime) === null || !nextServiceIds.length) {
     res.status(400).json({ message: 'Fecha, hora y servicios validos son requeridos.' });
     return;
   }
   if (nextStatus !== 'cancelled' && nextStatus !== 'completed' && nextStatus !== 'lost') {
+    const nextEmployee = await pool.request()
+      .input('id', sql.NVarChar, nextEmployeeId)
+      .input('organizationId', sql.NVarChar, req.params.organizationId)
+      .query('SELECT TOP 1 Id, Active, ScheduleOverridesJson FROM dbo.Employees WHERE Id = @id AND OrganizationId = @organizationId');
+    const settings = await pool.request()
+      .input('organizationId', sql.NVarChar, req.params.organizationId)
+      .query('SELECT TOP 1 * FROM dbo.BusinessSettings WHERE OrganizationId = @organizationId');
+    if (!nextEmployee.recordset.length || !Boolean(nextEmployee.recordset[0].Active)) {
+      res.status(400).json({ message: 'El empleado seleccionado no esta disponible.' });
+      return;
+    }
+    if (!employeeScheduleAllowsSlot(nextEmployee.recordset[0], settings.recordset[0], nextDate, nextTime, nextDuration)) {
+      res.status(409).json({ message: 'Ese horario queda fuera del horario del empleado.' });
+      return;
+    }
     const sameDayAppointments = await pool.request()
       .input('organizationId', sql.NVarChar, req.params.organizationId)
       .input('employeeId', sql.NVarChar, nextEmployeeId)
@@ -1401,7 +1535,8 @@ app.patch('/organizations/:organizationId/appointments/:appointmentId', requireA
     .input('total', sql.Decimal(12, 2), req.body.total == null ? numberValue(row.Total, 0) : numberValue(req.body.total, 0))
     .input('subtotal', sql.Decimal(12, 2), req.body.subtotal == null ? numberValue(row.Subtotal, 0) : numberValue(req.body.subtotal, 0))
     .input('discountAmount', sql.Decimal(12, 2), req.body.discountAmount == null ? numberValue(row.DiscountAmount, 0) : numberValue(req.body.discountAmount, 0))
-    .input('specialPrice', sql.Decimal(12, 2), req.body.specialPrice == null ? row.SpecialPrice ?? null : numberValue(req.body.specialPrice, 0))
+    .input('specialPrice', sql.Decimal(12, 2), Object.prototype.hasOwnProperty.call(req.body, 'specialPrice') ? req.body.specialPrice == null ? null : numberValue(req.body.specialPrice, 0) : row.SpecialPrice ?? null)
+    .input('discountReason', sql.NVarChar, String(req.body.discountReason ?? row.DiscountReason ?? ''))
     .query(`
       UPDATE dbo.Appointments SET EmployeeId = @employeeId, AppointmentDate = @date, AppointmentTime = @time, Duration = @duration,
         ServiceIdsJson = @serviceIdsJson, Status = @status, PaymentStatus = @paymentStatus, PaymentMethod = @paymentMethod,
@@ -1410,7 +1545,7 @@ app.patch('/organizations/:organizationId/appointments/:appointmentId', requireA
         CancellationReason = @cancellationReason, CancellationTiming = @cancellationTiming, RefundStatus = @refundStatus,
         ServiceRightForfeited = @serviceRightForfeited, ServicePaymentMethod = @servicePaymentMethod,
         ServicePaymentStatus = @servicePaymentStatus, ServicePaidAt = @servicePaidAt, Total = @total, Subtotal = @subtotal,
-        DiscountAmount = @discountAmount, SpecialPrice = @specialPrice, UpdatedAt = sysutcdatetime()
+        DiscountAmount = @discountAmount, SpecialPrice = @specialPrice, DiscountReason = @discountReason, UpdatedAt = sysutcdatetime()
       WHERE Id = @id AND OrganizationId = @organizationId
     `);
   if (nextStatus === 'completed' || nextStatus === 'lost' || nextStatus === 'cancelled') {
@@ -1446,14 +1581,15 @@ app.patch('/organizations/:organizationId/appointments/:appointmentId', requireA
 });
 
 app.delete('/organizations/:organizationId/appointments/:appointmentId', requireAuth, async (req, res) => {
-  if (!assertOrgStaff(req, res)) return;
+  if (!assertOrgScheduler(req, res)) return;
   const pool = await getPool();
   await pool.request().input('id', sql.NVarChar, req.params.appointmentId).input('organizationId', sql.NVarChar, req.params.organizationId).query('DELETE FROM dbo.Appointments WHERE Id = @id AND OrganizationId = @organizationId');
+  await writeAudit(paramValue(req.params.organizationId), req, 'delete', 'appointment', paramValue(req.params.appointmentId));
   res.json({ ok: true });
 });
 
 app.post('/organizations/:organizationId/day-notes', requireAuth, async (req, res) => {
-  if (!assertOrgStaff(req, res)) return;
+  if (!assertOrgScheduler(req, res)) return;
   const noteId = id();
   const pool = await getPool();
   await pool.request()
@@ -1463,18 +1599,20 @@ app.post('/organizations/:organizationId/day-notes', requireAuth, async (req, re
     .input('type', sql.NVarChar, String(req.body.type ?? 'closed'))
     .input('note', sql.NVarChar, String(req.body.note ?? ''))
     .query('INSERT INTO dbo.DayNotes (Id, OrganizationId, NoteDate, Type, Note) VALUES (@id, @organizationId, @date, @type, @note)');
+  await writeAudit(paramValue(req.params.organizationId), req, 'create', 'day_note', noteId, { date: req.body.date, type: req.body.type });
   res.status(201).json({ id: noteId });
 });
 
 app.delete('/organizations/:organizationId/day-notes/:noteId', requireAuth, async (req, res) => {
-  if (!assertOrgStaff(req, res)) return;
+  if (!assertOrgScheduler(req, res)) return;
   const pool = await getPool();
   await pool.request().input('id', sql.NVarChar, req.params.noteId).input('organizationId', sql.NVarChar, req.params.organizationId).query('DELETE FROM dbo.DayNotes WHERE Id = @id AND OrganizationId = @organizationId');
+  await writeAudit(paramValue(req.params.organizationId), req, 'delete', 'day_note', paramValue(req.params.noteId));
   res.json({ ok: true });
 });
 
 app.post('/organizations/:organizationId/announcements', requireAuth, async (req, res) => {
-  if (!assertOrgStaff(req, res)) return;
+  if (!assertOrgScheduler(req, res)) return;
   const announcementId = id();
   const pool = await getPool();
   await pool.request()
@@ -1485,24 +1623,27 @@ app.post('/organizations/:organizationId/announcements', requireAuth, async (req
     .input('audience', sql.NVarChar, enumValue(req.body.audience, ['clients', 'employees', 'all'] as const, 'all'))
     .input('active', sql.Bit, Boolean(req.body.active ?? true))
     .query('INSERT INTO dbo.Announcements (Id, OrganizationId, Title, Body, Audience, Active) VALUES (@id, @organizationId, @title, @body, @audience, @active)');
+  await writeAudit(paramValue(req.params.organizationId), req, 'create', 'announcement', announcementId, { audience: req.body.audience });
   res.status(201).json({ id: announcementId });
 });
 
 app.patch('/organizations/:organizationId/announcements/:announcementId', requireAuth, async (req, res) => {
-  if (!assertOrgStaff(req, res)) return;
+  if (!assertOrgScheduler(req, res)) return;
   const pool = await getPool();
   await pool.request()
     .input('id', sql.NVarChar, req.params.announcementId)
     .input('organizationId', sql.NVarChar, req.params.organizationId)
     .input('active', sql.Bit, Boolean(req.body.active))
     .query('UPDATE dbo.Announcements SET Active = @active, UpdatedAt = sysutcdatetime() WHERE Id = @id AND OrganizationId = @organizationId');
+  await writeAudit(paramValue(req.params.organizationId), req, 'update', 'announcement', paramValue(req.params.announcementId), { active: req.body.active });
   res.json({ ok: true });
 });
 
 app.delete('/organizations/:organizationId/announcements/:announcementId', requireAuth, async (req, res) => {
-  if (!assertOrgStaff(req, res)) return;
+  if (!assertOrgScheduler(req, res)) return;
   const pool = await getPool();
   await pool.request().input('id', sql.NVarChar, req.params.announcementId).input('organizationId', sql.NVarChar, req.params.organizationId).query('DELETE FROM dbo.Announcements WHERE Id = @id AND OrganizationId = @organizationId');
+  await writeAudit(paramValue(req.params.organizationId), req, 'delete', 'announcement', paramValue(req.params.announcementId));
   res.json({ ok: true });
 });
 

@@ -221,3 +221,8 @@ export function financeReportCsvUrl(organizationId: string, from: string, to: st
   const query = `from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&format=csv`;
   return `${apiUrl}/organizations/${organizationId}/reports/finance?${query}`;
 }
+
+export async function apiAppointmentPage(organizationId: string, page = 1, pageSize = 50) {
+  const query = `page=${encodeURIComponent(page)}&pageSize=${encodeURIComponent(pageSize)}`;
+  return apiGet<{ items: Record<string, unknown>[]; page: number; pageSize: number; total: number }>(`/organizations/${organizationId}/appointments?${query}`);
+}

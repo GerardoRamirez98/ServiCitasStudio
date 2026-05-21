@@ -17,7 +17,7 @@ import { useBrandColors } from '../theme-context';
 import { AuditLog, Announcement, AppearanceSettings, Appointment, BusinessSettings, ClientHistory, DayNote, Employee, EmployeeBlock, MercadoPagoConnectionStatus, OrganizationAddress, PaymentSummary, PortfolioItem, Promotion, Service, ServiceCategory, UserProfile } from '../types';
 import { makeEmployeeInviteCode } from '../utils/codes';
 import { dateLabel, monthMatrix, monthTitle, toDateId, weekDays } from '../utils/dates';
-import { appointmentDuration, availableEmployeesForSlot, formatDuration } from '../utils/schedule';
+import { appointmentDuration, availableEmployeesForSlot, formatDuration, selectedServiceSummaryForEmployee } from '../utils/schedule';
 
 type AdminTab = 'business' | 'agenda' | 'history' | 'schedule' | 'calendar' | 'services' | 'employees' | 'clients' | 'announcements' | 'payments' | 'settings';
 
@@ -58,6 +58,7 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
   const brandColors = useBrandColors();
   const [tab, setTab] = useState<AdminTab>('business');
   const [serviceDraft, setServiceDraft] = useState<Service | null>(null);
+  const [appointmentDraft, setAppointmentDraft] = useState<Appointment | null>(null);
   const [categoryDraft, setCategoryDraft] = useState<ServiceCategory | null>(null);
   const [portfolioDraft, setPortfolioDraft] = useState<PortfolioItem | null>(null);
   const [promotionDraft, setPromotionDraft] = useState<Promotion | null>(null);
@@ -623,6 +624,7 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
                         </View>
                       ) : null}
                       <View style={theme.styles.row}>
+                        <SmallButton label="Editar / reprogramar" onPress={() => setAppointmentDraft(appointment)} />
                         <SmallButton
                           label="Avisar demora"
                           onPress={() =>
@@ -645,6 +647,7 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
                           appointmentDuration(appointment, services),
                           appointment.id,
                           employeeBlocks,
+                          settings,
                         ).map((employee) => (
                             <Pill
                               key={employee.id}
@@ -871,6 +874,18 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
       ) : null}
 
       <ServiceModal draft={serviceDraft} categories={serviceCategories} employees={employees} setDraft={setServiceDraft} onSave={saveService} />
+      <AppointmentEditModal
+        appointment={appointmentDraft}
+        services={services}
+        employees={employees}
+        settings={settings}
+        onClose={() => setAppointmentDraft(null)}
+        onSave={async (payload) => {
+          if (!appointmentDraft) return;
+          await apiPatch(`/organizations/${profile.organizationId}/appointments/${appointmentDraft.id}`, payload);
+          setAppointmentDraft(null);
+        }}
+      />
       <ServiceCategoryModal draft={categoryDraft} setDraft={setCategoryDraft} onSave={saveCategory} />
       <PortfolioModal draft={portfolioDraft} categories={serviceCategories} employees={employees} setDraft={setPortfolioDraft} onPickImage={pickPortfolioImage} onSave={savePortfolioItem} />
       <PromotionModal draft={promotionDraft} services={services} setDraft={setPromotionDraft} onSave={savePromotion} />
@@ -1970,6 +1985,120 @@ const portfolioStyles = StyleSheet.create({
   },
 });
 
+function AppointmentEditModal({
+  appointment,
+  services,
+  employees,
+  settings,
+  onClose,
+  onSave,
+}: {
+  appointment: Appointment | null;
+  services: Service[];
+  employees: Employee[];
+  settings: BusinessSettings;
+  onClose: () => void;
+  onSave: (payload: Partial<Appointment>) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState<Appointment | null>(appointment);
+  const [specialPrice, setSpecialPrice] = useState('');
+
+  useEffect(() => {
+    setDraft(appointment);
+    setSpecialPrice(appointment?.specialPrice == null ? '' : String(appointment.specialPrice));
+  }, [appointment]);
+
+  if (!draft) {
+    return <Modal visible={false} transparent />;
+  }
+
+  const summary = selectedServiceSummaryForEmployee(draft.serviceIds, services, draft.employeeId);
+  const finalTotal = specialPrice.trim() ? Number(specialPrice || 0) : summary.total;
+  const discountAmount = Math.max(0, summary.total - finalTotal);
+
+  function toggleService(serviceId: string) {
+    setDraft((current) => current ? {
+      ...current,
+      serviceIds: current.serviceIds.includes(serviceId) ? current.serviceIds.filter((id) => id !== serviceId) : [...current.serviceIds, serviceId],
+    } : current);
+  }
+
+  return (
+    <Modal visible transparent animationType="slide">
+      <View style={theme.styles.modalShade}>
+        <View style={[theme.styles.modalCard, { maxHeight: '94%' }]}>
+          <ScrollView contentContainerStyle={{ gap: 12 }}>
+            <View style={theme.styles.rowBetween}>
+              <View style={theme.styles.grow}>
+                <Text style={theme.styles.title}>Editar cita</Text>
+                <Text style={theme.styles.mutedText}>{draft.clientName}</Text>
+              </View>
+              <SmallButton label="Cerrar" onPress={onClose} />
+            </View>
+            <View style={theme.styles.row}>
+              <View style={theme.styles.grow}>
+                <LabeledInput label="Fecha" helper="AAAA-MM-DD" value={draft.date} onChangeText={(date) => setDraft({ ...draft, date })} />
+              </View>
+              <View style={theme.styles.grow}>
+                <LabeledInput label="Hora" helper="24 horas" value={draft.time} onChangeText={(time) => setDraft({ ...draft, time })} />
+              </View>
+            </View>
+            <Text style={theme.styles.sectionTitle}>Servicios</Text>
+            <View style={theme.styles.pillWrap}>
+              {services.filter((service) => service.active || draft.serviceIds.includes(service.id)).map((service) => (
+                <Pill key={service.id} label={service.name} active={draft.serviceIds.includes(service.id)} onPress={() => toggleService(service.id)} />
+              ))}
+            </View>
+            <Text style={theme.styles.sectionTitle}>Empleado</Text>
+            <View style={theme.styles.pillWrap}>
+              {employees.filter((employee) => employee.active || employee.id === draft.employeeId).map((employee) => (
+                <Pill key={employee.id} label={employee.name} active={draft.employeeId === employee.id} onPress={() => setDraft({ ...draft, employeeId: employee.id })} />
+              ))}
+            </View>
+            <Text style={theme.styles.sectionTitle}>Estado</Text>
+            <View style={theme.styles.pillWrap}>
+              {(['pending', 'confirmed', 'waiting', 'in_service', 'completed', 'lost', 'cancelled'] as Appointment['status'][]).map((status) => (
+                <Pill key={status} label={status} active={draft.status === status} onPress={() => setDraft({ ...draft, status })} />
+              ))}
+            </View>
+            <LabeledInput label="Nota" style={theme.styles.textArea} value={draft.note} onChangeText={(note) => setDraft({ ...draft, note })} multiline />
+            <View style={theme.styles.card}>
+              <Text style={theme.styles.mutedText}>Horario negocio: {settings.businessStart}-{settings.businessEnd}</Text>
+              <Text style={theme.styles.mutedText}>Subtotal: ${summary.total} · Duracion calculada: {summary.duration || draft.duration || 60} min</Text>
+              <Text style={theme.styles.sectionTitle}>Total a cobrar: ${Number.isFinite(finalTotal) ? finalTotal : summary.total}</Text>
+            </View>
+            <LabeledInput label="Precio especial" helper="Opcional. Dejalo vacio para usar el subtotal actual." keyboardType="numeric" value={specialPrice} onChangeText={setSpecialPrice} />
+            {specialPrice.trim() ? (
+              <LabeledInput label="Motivo del ajuste" value={draft.discountReason ?? ''} onChangeText={(discountReason) => setDraft({ ...draft, discountReason })} />
+            ) : null}
+            <PrimaryButton
+              icon="save"
+              label="Guardar cambios"
+              onPress={() => {
+                if (!draft.serviceIds.length || !draft.employeeId || Number.isNaN(finalTotal) || finalTotal < 0) return;
+                onSave({
+                  date: draft.date,
+                  time: draft.time,
+                  employeeId: draft.employeeId,
+                  serviceIds: draft.serviceIds,
+                  status: draft.status,
+                  note: draft.note,
+                  duration: summary.duration || draft.duration || 60,
+                  subtotal: summary.total,
+                  total: specialPrice.trim() ? finalTotal : summary.total,
+                  specialPrice: specialPrice.trim() ? finalTotal : null,
+                  discountAmount,
+                  discountReason: draft.discountReason,
+                });
+              }}
+            />
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 function ServiceCategoriesList({
   categories,
   services,
@@ -2191,7 +2320,8 @@ function ServiceModal({ draft, categories, employees, setDraft, onSave }: { draf
     <Modal visible={!!draft} transparent animationType="slide">
       <View style={theme.styles.modalShade}>
         {draft ? (
-          <View style={theme.styles.modalCard}>
+          <View style={[theme.styles.modalCard, { maxHeight: '94%' }]}>
+            <ScrollView contentContainerStyle={{ gap: 12 }}>
             <Text style={theme.styles.title}>{draft.id ? 'Editar servicio' : 'Nuevo servicio'}</Text>
             <LabeledInput label="Nombre del servicio" placeholder="Ej. Corte clasico" value={draft.name} onChangeText={(name) => setDraft({ ...draft, name })} />
             <LabeledInput label="Precio del servicio" helper="Cantidad en pesos MXN. Ej. 50." keyboardType="numeric" value={String(draft.price)} onChangeText={(price) => setDraft({ ...draft, price: Number(price || 0) })} />
@@ -2249,6 +2379,7 @@ function ServiceModal({ draft, categories, employees, setDraft, onSave }: { draf
               <SmallButton label="Cancelar" onPress={() => setDraft(null)} />
               <SmallButton label="Guardar" onPress={onSave} />
             </View>
+            </ScrollView>
           </View>
         ) : null}
       </View>
@@ -2440,11 +2571,19 @@ function EmployeeModal({ draft, setDraft, onSave }: { draft: Employee | null; se
     setDraft({ ...draft, specialties: current.includes(value) ? current.filter((item) => item !== value) : [...current, value] });
   }
 
+  function updateSchedule(dayId: number, value: Partial<NonNullable<Employee['scheduleOverrides']>[string]>) {
+    if (!draft) return;
+    const key = String(dayId);
+    const current = draft.scheduleOverrides?.[key] ?? { enabled: true, start: '09:00', end: '18:00' };
+    setDraft({ ...draft, scheduleOverrides: { ...(draft.scheduleOverrides ?? {}), [key]: { ...current, ...value } } });
+  }
+
   return (
     <Modal visible={!!draft} transparent animationType="slide">
       <View style={theme.styles.modalShade}>
         {draft ? (
-          <View style={theme.styles.modalCard}>
+          <View style={[theme.styles.modalCard, { maxHeight: '94%' }]}>
+            <ScrollView contentContainerStyle={{ gap: 12 }}>
             <Text style={theme.styles.title}>{draft.id ? 'Editar empleado' : 'Nuevo empleado'}</Text>
             <LabeledInput label="Nombre del empleado" placeholder="Ej. Karen" value={draft.name} onChangeText={(name) => setDraft({ ...draft, name })} />
             <LabeledInput label="Correo para vincular login" helper="Debe coincidir con el correo que usara al registrarse." value={draft.email} autoCapitalize="none" keyboardType="email-address" onChangeText={(email) => setDraft({ ...draft, email })} />
@@ -2473,6 +2612,39 @@ function EmployeeModal({ draft, setDraft, onSave }: { draft: Employee | null; se
                 setCustomSpecialty('');
               }}
             />
+            <Text style={theme.styles.sectionTitle}>Horario semanal propio</Text>
+            <Text style={theme.styles.mutedText}>Opcional. Al activarlo para un dia reemplaza el horario general del negocio para ese empleado.</Text>
+            {weekDays.map((day) => {
+              const override = draft.scheduleOverrides?.[String(day.id)];
+              const enabled = override?.enabled !== false;
+              return (
+                <View key={day.id} style={theme.styles.card}>
+                  <View style={theme.styles.rowBetween}>
+                    <Text style={theme.styles.text}>{day.label}</Text>
+                    <View style={theme.styles.pillWrap}>
+                      <Pill label="General" active={!override} onPress={() => {
+                        if (!draft) return;
+                        const next = { ...(draft.scheduleOverrides ?? {}) };
+                        delete next[String(day.id)];
+                        setDraft({ ...draft, scheduleOverrides: next });
+                      }} />
+                      <Pill label="Personal" active={!!override && enabled} onPress={() => updateSchedule(day.id, { enabled: true })} />
+                      <Pill label="No trabaja" active={!!override && !enabled} onPress={() => updateSchedule(day.id, { enabled: false })} />
+                    </View>
+                  </View>
+                  {override && enabled ? (
+                    <View style={theme.styles.row}>
+                      <View style={theme.styles.grow}>
+                        <LabeledInput label="Entrada" value={override.start} onChangeText={(start) => updateSchedule(day.id, { start })} />
+                      </View>
+                      <View style={theme.styles.grow}>
+                        <LabeledInput label="Salida" value={override.end} onChangeText={(end) => updateSchedule(day.id, { end })} />
+                      </View>
+                    </View>
+                  ) : null}
+                </View>
+              );
+            })}
             <Text style={theme.styles.sectionTitle}>Pago del empleado</Text>
             <View style={theme.styles.pillWrap}>
               <Pill label="Sueldo fijo" active={draft.compensationMode === 'fixed'} onPress={() => setDraft({ ...draft, compensationMode: 'fixed' })} />
@@ -2499,6 +2671,7 @@ function EmployeeModal({ draft, setDraft, onSave }: { draft: Employee | null; se
               <SmallButton label="Cancelar" onPress={() => setDraft(null)} />
               <SmallButton label="Guardar" onPress={onSave} />
             </View>
+            </ScrollView>
           </View>
         ) : null}
       </View>

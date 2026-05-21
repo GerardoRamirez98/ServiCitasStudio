@@ -2,13 +2,12 @@ import { useState } from 'react';
 import { ScrollView, Text, View } from 'react-native';
 import { AppointmentCard } from '../components/AppointmentCard';
 import { ManualAppointmentModal } from '../components/ManualAppointmentModal';
-import { EmptyState, Pill, PrimaryButton, Section, SmallButton } from '../components/ui';
+import { EmptyState, PrimaryButton, Section, SmallButton } from '../components/ui';
 import { useOrganizationData } from '../hooks/useOrganizationData';
 import { apiPatch } from '../services/api';
 import { theme } from '../theme';
 import { useBrandColors } from '../theme-context';
 import { Appointment, UserProfile } from '../types';
-import { appointmentDuration, availableEmployeesForSlot } from '../utils/schedule';
 
 export function EmployeeScreen({ profile }: { profile: UserProfile }) {
   const { organization, services, employees, appointments, dayNotes, settings, announcements, employeeBlocks } = useOrganizationData(profile.organizationId);
@@ -130,28 +129,6 @@ export function EmployeeScreen({ profile }: { profile: UserProfile }) {
                           })
                         }
                       />
-                    </View>
-                    <Text style={theme.styles.mutedText}>Pasar al siguiente empleado disponible</Text>
-                    <View style={theme.styles.pillWrap}>
-                      {availableEmployeesForSlot(
-                        employees,
-                        appointments,
-                        services,
-                        appointment.date,
-                        appointment.time,
-                        appointmentDuration(appointment, services),
-                        appointment.id,
-                        employeeBlocks,
-                      )
-                        .filter((nextEmployee) => nextEmployee.id !== employee?.id)
-                        .map((nextEmployee) => (
-                          <Pill
-                            key={nextEmployee.id}
-                            label={nextEmployee.name}
-                            active={false}
-                            onPress={() => updateAppointment(appointment, { employeeId: nextEmployee.id, status: 'pending' })}
-                          />
-                        ))}
                     </View>
                   </View>
                 }

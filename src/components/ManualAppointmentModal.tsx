@@ -60,8 +60,8 @@ export function ManualAppointmentModal({
     [activeEmployees, appointments, effectiveDuration, employeeBlocks, forcedEmployeeId, selectedDate, services, settings],
   );
   const employeeOptions = useMemo(
-    () => (selectedTime ? availableEmployeesForSlot(activeEmployees, appointments, services, selectedDate, selectedTime, effectiveDuration, undefined, employeeBlocks) : activeEmployees),
-    [activeEmployees, appointments, effectiveDuration, employeeBlocks, selectedDate, selectedTime, services],
+    () => (selectedTime ? availableEmployeesForSlot(activeEmployees, appointments, services, selectedDate, selectedTime, effectiveDuration, undefined, employeeBlocks, settings) : activeEmployees),
+    [activeEmployees, appointments, effectiveDuration, employeeBlocks, selectedDate, selectedTime, services, settings],
   );
 
   useEffect(() => {

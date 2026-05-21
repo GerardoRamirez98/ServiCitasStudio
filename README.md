@@ -30,6 +30,8 @@ npm start
 - Agenda con servicios, empleados, horarios laborales, descansos, dias especiales y bloqueo de empalmes desde la API.
 - Categorias de servicios, portafolio de trabajos con imagenes y promociones automaticas por fecha/servicio.
 - Historial de clientes con puntos, nivel de recompensa, notas internas y auditoria reciente.
+- Edicion y reprogramacion de citas desde agenda con validacion de bloqueos y horarios propios por empleado.
+- Permisos de agenda separados para recepcion, administracion y empleado, con historial paginado para volumen alto.
 - Bloqueos individuales de empleado que se respetan al buscar horarios disponibles.
 - Mutaciones del negocio refrescan la informacion visible de la app automaticamente.
 - Anticipos en modo self-hosted: se registran y confirman manualmente.

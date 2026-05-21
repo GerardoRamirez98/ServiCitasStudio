@@ -62,7 +62,7 @@ export type Employee = {
   fixedSalary?: number;
   commissionPercent?: number;
   serviceDurations?: Record<string, number>;
-  scheduleOverrides?: Record<string, { start: string; end: string; breakStart?: string; breakEnd?: string }>;
+  scheduleOverrides?: Record<string, { enabled?: boolean; start: string; end: string; breakStart?: string; breakEnd?: string }>;
 };
 
 export type EmployeeBlockType = 'vacation' | 'sick_leave' | 'meal' | 'permission' | 'custom_schedule';
@@ -114,7 +114,7 @@ export type Appointment = {
   refundStatus?: RefundStatus;
   subtotal?: number;
   discountAmount?: number;
-  specialPrice?: number;
+  specialPrice?: number | null;
   discountReason?: string;
   total: number;
   termsAccepted: boolean;

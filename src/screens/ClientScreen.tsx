@@ -134,7 +134,7 @@ export function ClientScreen({ profile }: { profile: UserProfile }) {
       Alert.alert('Terminos pendientes', 'Acepta la politica de puntualidad.');
       return;
     }
-    const assignedEmployee = availableEmployeesForSlot(activeEmployees, appointments, services, selectedDate, selectedTime, effectiveDuration, undefined, employeeBlocks)[0];
+    const assignedEmployee = availableEmployeesForSlot(activeEmployees, appointments, services, selectedDate, selectedTime, effectiveDuration, undefined, employeeBlocks, settings)[0];
     if (!assignedEmployee) {
       Alert.alert('Horario ocupado', 'Ese horario acaba de ocuparse. Selecciona otro disponible.');
       return;
