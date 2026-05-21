@@ -11,7 +11,7 @@ import { Appointment, UserProfile } from '../types';
 import { appointmentDuration, availableEmployeesForSlot } from '../utils/schedule';
 
 export function EmployeeScreen({ profile }: { profile: UserProfile }) {
-  const { organization, services, employees, appointments, dayNotes, settings, announcements } = useOrganizationData(profile.organizationId);
+  const { organization, services, employees, appointments, dayNotes, settings, announcements, employeeBlocks } = useOrganizationData(profile.organizationId);
   const brandColors = useBrandColors();
   const [manualAppointmentOpen, setManualAppointmentOpen] = useState(false);
   const employee = employees.find((item) => item.userId === profile.id || item.id === profile.employeeId || item.email === profile.email);
@@ -141,6 +141,7 @@ export function EmployeeScreen({ profile }: { profile: UserProfile }) {
                         appointment.time,
                         appointmentDuration(appointment, services),
                         appointment.id,
+                        employeeBlocks,
                       )
                         .filter((nextEmployee) => nextEmployee.id !== employee?.id)
                         .map((nextEmployee) => (
@@ -172,6 +173,7 @@ export function EmployeeScreen({ profile }: { profile: UserProfile }) {
           employees={employees}
           appointments={appointments}
           dayNotes={dayNotes}
+          employeeBlocks={employeeBlocks}
           settings={settings}
           forcedEmployeeId={employee.id}
           onClose={() => setManualAppointmentOpen(false)}

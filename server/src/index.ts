@@ -20,6 +20,8 @@ const appointmentStatuses = ['pending', 'confirmed', 'waiting', 'in_service', 'c
 const paymentStatuses = ['not_required', 'pending', 'paid', 'offline', 'refunded'];
 const paymentMethods = ['none', 'card', 'cash', 'transfer', 'mercado_pago', 'spei', 'oxxo'];
 const paymentProviders = ['none', 'mercado_pago'];
+const promotionDiscountTypes = ['percent', 'fixed'];
+const employeeBlockTypes = ['vacation', 'sick_leave', 'meal', 'permission', 'custom_schedule'];
 const uploadsRoot = path.resolve(process.env.UPLOADS_DIR || 'uploads');
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -107,6 +109,15 @@ function emptyPaymentSummary() {
     byEmployee: {} as Record<string, number>,
     byService: {} as Record<string, number>,
   };
+}
+
+function csvEscape(value: unknown) {
+  const text = String(value ?? '');
+  return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function csv(rows: unknown[][]) {
+  return rows.map((row) => row.map(csvEscape).join(',')).join('\n');
 }
 
 function userRowToProfile(row: Record<string, unknown>) {
@@ -207,8 +218,14 @@ async function ensureDatabaseShape() {
       ALTER TABLE dbo.Appointments ADD ServicePaidAt datetime2 NULL;
     IF COL_LENGTH('dbo.Services', 'CategoryId') IS NULL
       ALTER TABLE dbo.Services ADD CategoryId nvarchar(128) NULL;
+    IF COL_LENGTH('dbo.Services', 'EmployeeDurationsJson') IS NULL
+      ALTER TABLE dbo.Services ADD EmployeeDurationsJson nvarchar(max) NULL;
     IF COL_LENGTH('dbo.Employees', 'SpecialtiesJson') IS NULL
       ALTER TABLE dbo.Employees ADD SpecialtiesJson nvarchar(max) NULL;
+    IF COL_LENGTH('dbo.Employees', 'ServiceDurationsJson') IS NULL
+      ALTER TABLE dbo.Employees ADD ServiceDurationsJson nvarchar(max) NULL;
+    IF COL_LENGTH('dbo.Employees', 'ScheduleOverridesJson') IS NULL
+      ALTER TABLE dbo.Employees ADD ScheduleOverridesJson nvarchar(max) NULL;
     IF COL_LENGTH('dbo.Announcements', 'Audience') IS NULL
       ALTER TABLE dbo.Announcements ADD Audience nvarchar(40) NOT NULL CONSTRAINT DF_Announcements_Audience DEFAULT 'all';
 
@@ -238,7 +255,89 @@ async function ensureDatabaseShape() {
         UpdatedAt datetime2 NOT NULL CONSTRAINT DF_PortfolioItems_UpdatedAt DEFAULT sysutcdatetime(),
         CONSTRAINT FK_PortfolioItems_Organizations FOREIGN KEY (OrganizationId) REFERENCES dbo.Organizations(Id)
       );
+    IF OBJECT_ID('dbo.Promotions', 'U') IS NULL
+      CREATE TABLE dbo.Promotions (
+        Id nvarchar(128) NOT NULL CONSTRAINT PK_Promotions PRIMARY KEY,
+        OrganizationId nvarchar(128) NOT NULL,
+        Title nvarchar(200) NOT NULL,
+        Description nvarchar(500) NULL,
+        Active bit NOT NULL CONSTRAINT DF_Promotions_Active DEFAULT 1,
+        StartsAt date NOT NULL,
+        EndsAt date NOT NULL,
+        DiscountType nvarchar(40) NOT NULL,
+        DiscountValue decimal(12, 2) NOT NULL,
+        ServiceIdsJson nvarchar(max) NOT NULL,
+        CreatedAt datetime2 NOT NULL CONSTRAINT DF_Promotions_CreatedAt DEFAULT sysutcdatetime(),
+        UpdatedAt datetime2 NOT NULL CONSTRAINT DF_Promotions_UpdatedAt DEFAULT sysutcdatetime(),
+        CONSTRAINT FK_Promotions_Organizations FOREIGN KEY (OrganizationId) REFERENCES dbo.Organizations(Id)
+      );
+    IF OBJECT_ID('dbo.ClientHistories', 'U') IS NULL
+      CREATE TABLE dbo.ClientHistories (
+        OrganizationId nvarchar(128) NOT NULL,
+        ClientId nvarchar(128) NOT NULL,
+        ClientName nvarchar(200) NOT NULL,
+        TotalAppointments int NOT NULL CONSTRAINT DF_ClientHistories_TotalAppointments DEFAULT 0,
+        Cancellations int NOT NULL CONSTRAINT DF_ClientHistories_Cancellations DEFAULT 0,
+        NoShows int NOT NULL CONSTRAINT DF_ClientHistories_NoShows DEFAULT 0,
+        TotalSpent decimal(12, 2) NOT NULL CONSTRAINT DF_ClientHistories_TotalSpent DEFAULT 0,
+        FavoriteServiceIdsJson nvarchar(max) NOT NULL CONSTRAINT DF_ClientHistories_FavoriteServiceIdsJson DEFAULT '[]',
+        RewardPoints int NOT NULL CONSTRAINT DF_ClientHistories_RewardPoints DEFAULT 0,
+        RewardLevel nvarchar(40) NOT NULL CONSTRAINT DF_ClientHistories_RewardLevel DEFAULT 'bronze',
+        LastVisitAt datetime2 NULL,
+        Notes nvarchar(max) NULL,
+        UpdatedAt datetime2 NOT NULL CONSTRAINT DF_ClientHistories_UpdatedAt DEFAULT sysutcdatetime(),
+        CONSTRAINT PK_ClientHistories PRIMARY KEY (OrganizationId, ClientId),
+        CONSTRAINT FK_ClientHistories_Organizations FOREIGN KEY (OrganizationId) REFERENCES dbo.Organizations(Id)
+      );
+    IF OBJECT_ID('dbo.EmployeeBlocks', 'U') IS NULL
+      CREATE TABLE dbo.EmployeeBlocks (
+        Id nvarchar(128) NOT NULL CONSTRAINT PK_EmployeeBlocks PRIMARY KEY,
+        OrganizationId nvarchar(128) NOT NULL,
+        EmployeeId nvarchar(128) NOT NULL,
+        Type nvarchar(40) NOT NULL,
+        BlockDate date NOT NULL,
+        StartsAt time(0) NOT NULL,
+        EndsAt time(0) NOT NULL,
+        Note nvarchar(500) NULL,
+        CreatedAt datetime2 NOT NULL CONSTRAINT DF_EmployeeBlocks_CreatedAt DEFAULT sysutcdatetime(),
+        UpdatedAt datetime2 NOT NULL CONSTRAINT DF_EmployeeBlocks_UpdatedAt DEFAULT sysutcdatetime(),
+        CONSTRAINT FK_EmployeeBlocks_Organizations FOREIGN KEY (OrganizationId) REFERENCES dbo.Organizations(Id)
+      );
+    IF OBJECT_ID('dbo.AuditLogs', 'U') IS NULL
+      CREATE TABLE dbo.AuditLogs (
+        Id nvarchar(128) NOT NULL CONSTRAINT PK_AuditLogs PRIMARY KEY,
+        OrganizationId nvarchar(128) NOT NULL,
+        ActorId nvarchar(128) NULL,
+        ActorName nvarchar(200) NULL,
+        Action nvarchar(120) NOT NULL,
+        EntityType nvarchar(80) NOT NULL,
+        EntityId nvarchar(128) NULL,
+        Detail nvarchar(max) NULL,
+        CreatedAt datetime2 NOT NULL CONSTRAINT DF_AuditLogs_CreatedAt DEFAULT sysutcdatetime(),
+        CONSTRAINT FK_AuditLogs_Organizations FOREIGN KEY (OrganizationId) REFERENCES dbo.Organizations(Id)
+      );
   `);
+}
+
+async function writeAudit(organizationId: string, req: express.Request, action: string, entityType: string, entityId?: string, detail?: unknown) {
+  const pool = await getPool();
+  await pool.request()
+    .input('id', sql.NVarChar, id())
+    .input('organizationId', sql.NVarChar, organizationId)
+    .input('actorId', sql.NVarChar, req.user?.id ?? null)
+    .input('actorName', sql.NVarChar, req.user?.name ?? null)
+    .input('action', sql.NVarChar, action)
+    .input('entityType', sql.NVarChar, entityType)
+    .input('entityId', sql.NVarChar, entityId ?? null)
+    .input('detail', sql.NVarChar, detail == null ? null : typeof detail === 'string' ? detail : JSON.stringify(detail))
+    .query('INSERT INTO dbo.AuditLogs (Id, OrganizationId, ActorId, ActorName, Action, EntityType, EntityId, Detail) VALUES (@id, @organizationId, @actorId, @actorName, @action, @entityType, @entityId, @detail)');
+}
+
+function rewardLevel(points: number) {
+  if (points >= 1000) return 'vip';
+  if (points >= 500) return 'gold';
+  if (points >= 200) return 'silver';
+  return 'bronze';
 }
 
 app.post('/auth/register', async (req, res) => {
@@ -415,6 +514,10 @@ app.get('/organizations/:id/bootstrap', requireAuth, async (req, res) => {
   const dayNotes = await pool.request().input('id', sql.NVarChar, req.params.id).query('SELECT * FROM dbo.DayNotes WHERE OrganizationId = @id ORDER BY NoteDate');
   const announcements = await pool.request().input('id', sql.NVarChar, req.params.id).query('SELECT * FROM dbo.Announcements WHERE OrganizationId = @id ORDER BY Title');
   const portfolioItems = await pool.request().input('id', sql.NVarChar, req.params.id).query('SELECT * FROM dbo.PortfolioItems WHERE OrganizationId = @id ORDER BY CreatedAt DESC');
+  const promotions = await pool.request().input('id', sql.NVarChar, req.params.id).query('SELECT * FROM dbo.Promotions WHERE OrganizationId = @id ORDER BY StartsAt DESC, Title');
+  const clientHistories = await pool.request().input('id', sql.NVarChar, req.params.id).query('SELECT TOP 500 * FROM dbo.ClientHistories WHERE OrganizationId = @id ORDER BY LastVisitAt DESC, TotalSpent DESC');
+  const employeeBlocks = await pool.request().input('id', sql.NVarChar, req.params.id).query('SELECT * FROM dbo.EmployeeBlocks WHERE OrganizationId = @id ORDER BY BlockDate DESC, StartsAt');
+  const auditLogs = await pool.request().input('id', sql.NVarChar, req.params.id).query('SELECT TOP 200 * FROM dbo.AuditLogs WHERE OrganizationId = @id ORDER BY CreatedAt DESC');
 
   res.json({
     organization: organization.recordset[0] ?? null,
@@ -427,6 +530,10 @@ app.get('/organizations/:id/bootstrap', requireAuth, async (req, res) => {
     dayNotes: dayNotes.recordset,
     announcements: announcements.recordset,
     portfolioItems: portfolioItems.recordset,
+    promotions: promotions.recordset,
+    clientHistories: clientHistories.recordset,
+    employeeBlocks: employeeBlocks.recordset,
+    auditLogs: auditLogs.recordset,
   });
 });
 
@@ -490,6 +597,32 @@ app.get('/organizations/:organizationId/reports/finance', requireAuth, async (re
       summary.byService[key] = (summary.byService[key] ?? 0) + (completed ? total / Math.max(1, serviceIds.length) : 0);
     });
   });
+
+  if (String(req.query.format ?? '') === 'csv') {
+    const rows: unknown[][] = [
+      ['metric', 'value'],
+      ['totalRevenue', summary.totalRevenue],
+      ['deposits', summary.deposits],
+      ['pendingPayments', summary.pendingPayments],
+      ['completedPayments', summary.completedPayments],
+      ['cash', summary.cash],
+      ['transfer', summary.transfer],
+      ['mercadoPago', summary.mercadoPago],
+      ['spei', summary.spei],
+      ['oxxo', summary.oxxo],
+      ['fees', summary.fees],
+      [],
+      ['employee', 'amount'],
+      ...Object.entries(summary.byEmployee),
+      [],
+      ['service', 'amount'],
+      ...Object.entries(summary.byService),
+    ];
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="servicitas-finance-${from}-${to}.csv"`);
+    res.send(csv(rows));
+    return;
+  }
 
   res.json({ from, to, summary });
 });
@@ -727,7 +860,8 @@ app.post('/organizations/:organizationId/services', requireAuth, async (req, res
     .input('duration', sql.Int, Number(req.body.duration ?? 0))
     .input('active', sql.Bit, Boolean(req.body.active))
     .input('categoryId', sql.NVarChar, stringValue(req.body.categoryId))
-    .query('INSERT INTO dbo.Services (Id, OrganizationId, Name, Price, Duration, Active, CategoryId) VALUES (@id, @organizationId, @name, @price, @duration, @active, NULLIF(@categoryId, \'\'))');
+    .input('employeeDurationsJson', sql.NVarChar, JSON.stringify(req.body.employeeDurations ?? {}))
+    .query('INSERT INTO dbo.Services (Id, OrganizationId, Name, Price, Duration, Active, CategoryId, EmployeeDurationsJson) VALUES (@id, @organizationId, @name, @price, @duration, @active, NULLIF(@categoryId, \'\'), @employeeDurationsJson)');
   res.status(201).json({ id: serviceId });
 });
 
@@ -742,7 +876,8 @@ app.put('/organizations/:organizationId/services/:serviceId', requireAuth, async
     .input('duration', sql.Int, Number(req.body.duration ?? 0))
     .input('active', sql.Bit, Boolean(req.body.active))
     .input('categoryId', sql.NVarChar, stringValue(req.body.categoryId))
-    .query('UPDATE dbo.Services SET Name = @name, Price = @price, Duration = @duration, Active = @active, CategoryId = NULLIF(@categoryId, \'\'), UpdatedAt = sysutcdatetime() WHERE Id = @id AND OrganizationId = @organizationId');
+    .input('employeeDurationsJson', sql.NVarChar, JSON.stringify(req.body.employeeDurations ?? {}))
+    .query('UPDATE dbo.Services SET Name = @name, Price = @price, Duration = @duration, Active = @active, CategoryId = NULLIF(@categoryId, \'\'), EmployeeDurationsJson = @employeeDurationsJson, UpdatedAt = sysutcdatetime() WHERE Id = @id AND OrganizationId = @organizationId');
   res.json({ ok: true });
 });
 
@@ -802,6 +937,134 @@ app.delete('/organizations/:organizationId/service-categories/:categoryId', requ
   res.json({ ok: true });
 });
 
+app.post('/organizations/:organizationId/promotions', requireAuth, async (req, res) => {
+  if (!assertOrgAdmin(req, res)) return;
+  const title = stringValue(req.body.title);
+  const startsAt = stringValue(req.body.startsAt);
+  const endsAt = stringValue(req.body.endsAt);
+  if (!title || !/^\d{4}-\d{2}-\d{2}$/.test(startsAt) || !/^\d{4}-\d{2}-\d{2}$/.test(endsAt)) {
+    res.status(400).json({ message: 'Titulo y rango de fechas son requeridos.' });
+    return;
+  }
+  const promotionId = id();
+  const pool = await getPool();
+  await pool.request()
+    .input('id', sql.NVarChar, promotionId)
+    .input('organizationId', sql.NVarChar, req.params.organizationId)
+    .input('title', sql.NVarChar, title)
+    .input('description', sql.NVarChar, stringValue(req.body.description))
+    .input('active', sql.Bit, req.body.active !== false)
+    .input('startsAt', sql.Date, startsAt)
+    .input('endsAt', sql.Date, endsAt)
+    .input('discountType', sql.NVarChar, enumValue(req.body.discountType, promotionDiscountTypes, 'percent'))
+    .input('discountValue', sql.Decimal(12, 2), numberValue(req.body.discountValue, 0))
+    .input('serviceIdsJson', sql.NVarChar, JSON.stringify(parseJsonArray(req.body.serviceIds).map(String).filter(Boolean)))
+    .query(`
+      INSERT INTO dbo.Promotions (Id, OrganizationId, Title, Description, Active, StartsAt, EndsAt, DiscountType, DiscountValue, ServiceIdsJson)
+      VALUES (@id, @organizationId, @title, NULLIF(@description, ''), @active, @startsAt, @endsAt, @discountType, @discountValue, @serviceIdsJson)
+    `);
+  await writeAudit(paramValue(req.params.organizationId), req, 'create', 'promotion', promotionId, { title });
+  res.status(201).json({ id: promotionId });
+});
+
+app.put('/organizations/:organizationId/promotions/:promotionId', requireAuth, async (req, res) => {
+  if (!assertOrgAdmin(req, res)) return;
+  const title = stringValue(req.body.title);
+  const startsAt = stringValue(req.body.startsAt);
+  const endsAt = stringValue(req.body.endsAt);
+  if (!title || !/^\d{4}-\d{2}-\d{2}$/.test(startsAt) || !/^\d{4}-\d{2}-\d{2}$/.test(endsAt)) {
+    res.status(400).json({ message: 'Titulo y rango de fechas son requeridos.' });
+    return;
+  }
+  const pool = await getPool();
+  await pool.request()
+    .input('id', sql.NVarChar, req.params.promotionId)
+    .input('organizationId', sql.NVarChar, req.params.organizationId)
+    .input('title', sql.NVarChar, title)
+    .input('description', sql.NVarChar, stringValue(req.body.description))
+    .input('active', sql.Bit, req.body.active !== false)
+    .input('startsAt', sql.Date, startsAt)
+    .input('endsAt', sql.Date, endsAt)
+    .input('discountType', sql.NVarChar, enumValue(req.body.discountType, promotionDiscountTypes, 'percent'))
+    .input('discountValue', sql.Decimal(12, 2), numberValue(req.body.discountValue, 0))
+    .input('serviceIdsJson', sql.NVarChar, JSON.stringify(parseJsonArray(req.body.serviceIds).map(String).filter(Boolean)))
+    .query(`
+      UPDATE dbo.Promotions
+      SET Title = @title, Description = NULLIF(@description, ''), Active = @active, StartsAt = @startsAt, EndsAt = @endsAt,
+        DiscountType = @discountType, DiscountValue = @discountValue, ServiceIdsJson = @serviceIdsJson, UpdatedAt = sysutcdatetime()
+      WHERE Id = @id AND OrganizationId = @organizationId
+    `);
+  await writeAudit(paramValue(req.params.organizationId), req, 'update', 'promotion', paramValue(req.params.promotionId), { title });
+  res.json({ ok: true });
+});
+
+app.delete('/organizations/:organizationId/promotions/:promotionId', requireAuth, async (req, res) => {
+  if (!assertOrgAdmin(req, res)) return;
+  const pool = await getPool();
+  await pool.request()
+    .input('id', sql.NVarChar, req.params.promotionId)
+    .input('organizationId', sql.NVarChar, req.params.organizationId)
+    .query('DELETE FROM dbo.Promotions WHERE Id = @id AND OrganizationId = @organizationId');
+  await writeAudit(paramValue(req.params.organizationId), req, 'delete', 'promotion', paramValue(req.params.promotionId));
+  res.json({ ok: true });
+});
+
+app.put('/organizations/:organizationId/client-histories/:clientId', requireAuth, async (req, res) => {
+  if (!assertOrgStaff(req, res)) return;
+  const pool = await getPool();
+  await pool.request()
+    .input('organizationId', sql.NVarChar, req.params.organizationId)
+    .input('clientId', sql.NVarChar, req.params.clientId)
+    .input('clientName', sql.NVarChar, stringValue(req.body.clientName, 'Cliente'))
+    .input('notes', sql.NVarChar, stringValue(req.body.notes))
+    .query(`
+      MERGE dbo.ClientHistories AS target
+      USING (SELECT @organizationId AS OrganizationId, @clientId AS ClientId) AS source
+      ON target.OrganizationId = source.OrganizationId AND target.ClientId = source.ClientId
+      WHEN MATCHED THEN UPDATE SET Notes = @notes, ClientName = COALESCE(NULLIF(@clientName, ''), ClientName), UpdatedAt = sysutcdatetime()
+      WHEN NOT MATCHED THEN INSERT (OrganizationId, ClientId, ClientName, Notes)
+        VALUES (@organizationId, @clientId, @clientName, @notes);
+    `);
+  await writeAudit(paramValue(req.params.organizationId), req, 'update_notes', 'client', paramValue(req.params.clientId));
+  res.json({ ok: true });
+});
+
+app.post('/organizations/:organizationId/employee-blocks', requireAuth, async (req, res) => {
+  if (!assertOrgStaff(req, res)) return;
+  const blockId = id();
+  const date = stringValue(req.body.date);
+  const startsAt = stringValue(req.body.startsAt);
+  const endsAt = stringValue(req.body.endsAt);
+  if (!stringValue(req.body.employeeId) || !/^\d{4}-\d{2}-\d{2}$/.test(date) || parseTimeToMinutes(startsAt) === null || parseTimeToMinutes(endsAt) === null) {
+    res.status(400).json({ message: 'Empleado, fecha, inicio y fin son requeridos.' });
+    return;
+  }
+  const pool = await getPool();
+  await pool.request()
+    .input('id', sql.NVarChar, blockId)
+    .input('organizationId', sql.NVarChar, req.params.organizationId)
+    .input('employeeId', sql.NVarChar, stringValue(req.body.employeeId))
+    .input('type', sql.NVarChar, enumValue(req.body.type, employeeBlockTypes, 'permission'))
+    .input('date', sql.Date, date)
+    .input('startsAt', sql.NVarChar, startsAt)
+    .input('endsAt', sql.NVarChar, endsAt)
+    .input('note', sql.NVarChar, stringValue(req.body.note))
+    .query('INSERT INTO dbo.EmployeeBlocks (Id, OrganizationId, EmployeeId, Type, BlockDate, StartsAt, EndsAt, Note) VALUES (@id, @organizationId, @employeeId, @type, @date, @startsAt, @endsAt, NULLIF(@note, \'\'))');
+  await writeAudit(paramValue(req.params.organizationId), req, 'create', 'employee_block', blockId);
+  res.status(201).json({ id: blockId });
+});
+
+app.delete('/organizations/:organizationId/employee-blocks/:blockId', requireAuth, async (req, res) => {
+  if (!assertOrgStaff(req, res)) return;
+  const pool = await getPool();
+  await pool.request()
+    .input('id', sql.NVarChar, req.params.blockId)
+    .input('organizationId', sql.NVarChar, req.params.organizationId)
+    .query('DELETE FROM dbo.EmployeeBlocks WHERE Id = @id AND OrganizationId = @organizationId');
+  await writeAudit(paramValue(req.params.organizationId), req, 'delete', 'employee_block', paramValue(req.params.blockId));
+  res.json({ ok: true });
+});
+
 app.post('/organizations/:organizationId/employees', requireAuth, async (req, res) => {
   if (!assertOrgAdmin(req, res)) return;
   const employeeId = id();
@@ -819,9 +1082,11 @@ app.post('/organizations/:organizationId/employees', requireAuth, async (req, re
     .input('compensationMode', sql.NVarChar, String(req.body.compensationMode ?? 'commission'))
     .input('fixedSalary', sql.Decimal(12, 2), Number(req.body.fixedSalary ?? 0))
     .input('commissionPercent', sql.Decimal(5, 2), Number(req.body.commissionPercent ?? 0))
+    .input('serviceDurationsJson', sql.NVarChar, JSON.stringify(req.body.serviceDurations ?? {}))
+    .input('scheduleOverridesJson', sql.NVarChar, JSON.stringify(req.body.scheduleOverrides ?? {}))
     .query(`
-      INSERT INTO dbo.Employees (Id, OrganizationId, Name, Email, Role, SpecialtiesJson, Active, InviteCode, CompensationMode, FixedSalary, CommissionPercent)
-      VALUES (@id, @organizationId, @name, @email, @role, @specialtiesJson, @active, @inviteCode, @compensationMode, @fixedSalary, @commissionPercent)
+      INSERT INTO dbo.Employees (Id, OrganizationId, Name, Email, Role, SpecialtiesJson, Active, InviteCode, CompensationMode, FixedSalary, CommissionPercent, ServiceDurationsJson, ScheduleOverridesJson)
+      VALUES (@id, @organizationId, @name, @email, @role, @specialtiesJson, @active, @inviteCode, @compensationMode, @fixedSalary, @commissionPercent, @serviceDurationsJson, @scheduleOverridesJson)
     `);
   res.status(201).json({ id: employeeId, inviteCode });
 });
@@ -841,9 +1106,12 @@ app.put('/organizations/:organizationId/employees/:employeeId', requireAuth, asy
     .input('compensationMode', sql.NVarChar, String(req.body.compensationMode ?? 'commission'))
     .input('fixedSalary', sql.Decimal(12, 2), Number(req.body.fixedSalary ?? 0))
     .input('commissionPercent', sql.Decimal(5, 2), Number(req.body.commissionPercent ?? 0))
+    .input('serviceDurationsJson', sql.NVarChar, JSON.stringify(req.body.serviceDurations ?? {}))
+    .input('scheduleOverridesJson', sql.NVarChar, JSON.stringify(req.body.scheduleOverrides ?? {}))
     .query(`
       UPDATE dbo.Employees SET Name = @name, Email = @email, Role = @role, SpecialtiesJson = @specialtiesJson, Active = @active, InviteCode = @inviteCode,
-        CompensationMode = @compensationMode, FixedSalary = @fixedSalary, CommissionPercent = @commissionPercent, UpdatedAt = sysutcdatetime()
+        CompensationMode = @compensationMode, FixedSalary = @fixedSalary, CommissionPercent = @commissionPercent,
+        ServiceDurationsJson = @serviceDurationsJson, ScheduleOverridesJson = @scheduleOverridesJson, UpdatedAt = sysutcdatetime()
       WHERE Id = @id AND OrganizationId = @organizationId
     `);
   res.json({ ok: true });
@@ -902,14 +1170,25 @@ app.post('/organizations/:organizationId/appointments', requireAuth, async (req,
   const services = await pool
     .request()
     .input('organizationId', sql.NVarChar, organizationId)
-    .query('SELECT Id, Duration, Active FROM dbo.Services WHERE OrganizationId = @organizationId');
+    .query('SELECT Id, Price, Duration, Active, EmployeeDurationsJson FROM dbo.Services WHERE OrganizationId = @organizationId');
   const serviceMap = new Map(services.recordset.map((service) => [String(service.Id), service]));
   const missingService = serviceIds.some((serviceId) => !serviceMap.has(serviceId));
   if (missingService) {
     res.status(400).json({ message: 'Uno o mas servicios no existen en este negocio.' });
     return;
   }
-  const duration = requestedDuration || serviceIds.reduce((sum, serviceId) => sum + numberValue(serviceMap.get(serviceId)?.Duration, 0), 0) || 60;
+  const duration = requestedDuration || serviceIds.reduce((sum, serviceId) => {
+    const service = serviceMap.get(serviceId);
+    const durations = (() => {
+      try {
+        return JSON.parse(String(service?.EmployeeDurationsJson ?? '{}')) as Record<string, number>;
+      } catch {
+        return {};
+      }
+    })();
+    return sum + numberValue(durations[employeeId], numberValue(service?.Duration, 0));
+  }, 0) || 60;
+  const subtotal = serviceIds.reduce((sum, serviceId) => sum + numberValue(serviceMap.get(serviceId)?.Price, 0), 0);
   const employee = await pool
     .request()
     .input('id', sql.NVarChar, employeeId)
@@ -930,6 +1209,12 @@ app.post('/organizations/:organizationId/appointments', requireAuth, async (req,
       WHERE OrganizationId = @organizationId AND EmployeeId = @employeeId AND AppointmentDate = @date
         AND Status NOT IN ('completed', 'lost', 'cancelled')
     `);
+  const employeeBlocks = await pool
+    .request()
+    .input('organizationId', sql.NVarChar, organizationId)
+    .input('employeeId', sql.NVarChar, employeeId)
+    .input('date', sql.Date, date)
+    .query('SELECT StartsAt, EndsAt FROM dbo.EmployeeBlocks WHERE OrganizationId = @organizationId AND EmployeeId = @employeeId AND BlockDate = @date');
   const start = parseTimeToMinutes(time);
   const end = (start ?? 0) + duration;
   const hasConflict = sameDayAppointments.recordset.some((appointment) => {
@@ -942,10 +1227,35 @@ app.post('/organizations/:organizationId/appointments', requireAuth, async (req,
     res.status(409).json({ message: 'Ese horario ya esta ocupado para el empleado seleccionado.' });
     return;
   }
+  const hasBlockConflict = employeeBlocks.recordset.some((block) => {
+    const blockStart = parseTimeToMinutes(block.StartsAt);
+    const blockEnd = parseTimeToMinutes(block.EndsAt);
+    if (blockStart === null || blockEnd === null) return false;
+    return (start ?? 0) < blockEnd && end > blockStart;
+  });
+  if (hasBlockConflict) {
+    res.status(409).json({ message: 'Ese horario esta bloqueado para el empleado seleccionado.' });
+    return;
+  }
 
   const deposit = numberValue(req.body.deposit, 0);
   const paymentMethod = enumValue(req.body.paymentMethod, paymentMethods, 'none');
   const requestedDepositPaymentMethod = enumValue(req.body.requestedDepositPaymentMethod, paymentMethods, paymentMethod);
+  const promotions = await pool
+    .request()
+    .input('organizationId', sql.NVarChar, organizationId)
+    .input('date', sql.Date, date)
+    .query('SELECT * FROM dbo.Promotions WHERE OrganizationId = @organizationId AND Active = 1 AND StartsAt <= @date AND EndsAt >= @date');
+  const promoDiscount = promotions.recordset.reduce((best, promotion) => {
+    const promoServices = parseJsonArray(promotion.ServiceIdsJson).map(String);
+    if (promoServices.length && !serviceIds.some((serviceId) => promoServices.includes(serviceId))) return best;
+    const value = numberValue(promotion.DiscountValue, 0);
+    const discount = String(promotion.DiscountType) === 'fixed' ? value : Math.round((subtotal * value) / 100);
+    return discount > best.amount ? { amount: discount, id: String(promotion.Id), title: String(promotion.Title) } : best;
+  }, { amount: 0, id: '', title: '' });
+  const requestedSpecialPrice = req.body.specialPrice == null ? null : numberValue(req.body.specialPrice, 0);
+  const discountAmount = Math.max(0, numberValue(req.body.discountAmount, promoDiscount.amount));
+  const total = requestedSpecialPrice == null ? Math.max(0, subtotal - discountAmount) : requestedSpecialPrice;
   await pool.request()
     .input('id', sql.NVarChar, appointmentId)
     .input('organizationId', sql.NVarChar, organizationId)
@@ -966,11 +1276,11 @@ app.post('/organizations/:organizationId/appointments', requireAuth, async (req,
     .input('paymentMethod', sql.NVarChar, paymentMethod)
     .input('paymentProvider', sql.NVarChar, 'none')
     .input('requestedDepositPaymentMethod', sql.NVarChar, requestedDepositPaymentMethod)
-    .input('total', sql.Decimal(12, 2), numberValue(req.body.total, 0))
-    .input('subtotal', sql.Decimal(12, 2), numberValue(req.body.subtotal, numberValue(req.body.total, 0)))
-    .input('discountAmount', sql.Decimal(12, 2), numberValue(req.body.discountAmount, 0))
-    .input('specialPrice', sql.Decimal(12, 2), req.body.specialPrice == null ? null : numberValue(req.body.specialPrice, 0))
-    .input('discountReason', sql.NVarChar, String(req.body.discountReason ?? ''))
+    .input('total', sql.Decimal(12, 2), total)
+    .input('subtotal', sql.Decimal(12, 2), subtotal)
+    .input('discountAmount', sql.Decimal(12, 2), discountAmount)
+    .input('specialPrice', sql.Decimal(12, 2), requestedSpecialPrice)
+    .input('discountReason', sql.NVarChar, String(req.body.discountReason ?? promoDiscount.title))
     .input('termsAccepted', sql.Bit, Boolean(req.body.termsAccepted))
     .input('source', sql.NVarChar, source)
     .query(`
@@ -979,6 +1289,19 @@ app.post('/organizations/:organizationId/appointments', requireAuth, async (req,
       VALUES
         (@id, @organizationId, @clientId, @clientName, @date, @time, @endTime, @duration, @serviceIdsJson, @employeeId, @status, @note, @deposit, @requiresDeposit, @depositPercent, @paymentStatus, @paymentMethod, @paymentProvider, @requestedDepositPaymentMethod, @total, @subtotal, @discountAmount, @specialPrice, @discountReason, @termsAccepted, @source)
     `);
+  await pool.request()
+    .input('organizationId', sql.NVarChar, organizationId)
+    .input('clientId', sql.NVarChar, String(req.body.clientId ?? req.user?.id ?? 'manual'))
+    .input('clientName', sql.NVarChar, String(req.body.clientName ?? '').trim())
+    .query(`
+      MERGE dbo.ClientHistories AS target
+      USING (SELECT @organizationId AS OrganizationId, @clientId AS ClientId) AS source
+      ON target.OrganizationId = source.OrganizationId AND target.ClientId = source.ClientId
+      WHEN MATCHED THEN UPDATE SET ClientName = @clientName, TotalAppointments = TotalAppointments + 1, UpdatedAt = sysutcdatetime()
+      WHEN NOT MATCHED THEN INSERT (OrganizationId, ClientId, ClientName, TotalAppointments)
+        VALUES (@organizationId, @clientId, @clientName, 1);
+    `);
+  await writeAudit(organizationId, req, 'create', 'appointment', appointmentId, { clientName: req.body.clientName, date, time });
   res.status(201).json({ appointmentId, employeeId });
 });
 
@@ -992,6 +1315,11 @@ app.patch('/organizations/:organizationId/appointments/:appointmentId', requireA
   }
   const row = current.recordset[0];
   const nextStatus = enumValue(req.body.status, appointmentStatuses, String(row.Status));
+  const nextEmployeeId = String(req.body.employeeId ?? row.EmployeeId);
+  const nextDate = stringValue(req.body.date ?? String(row.AppointmentDate).slice(0, 10));
+  const nextTime = stringValue(req.body.time ?? String(row.AppointmentTime).slice(0, 5));
+  const nextServiceIds = req.body.serviceIds ? parseJsonArray(req.body.serviceIds).map(String).filter(Boolean) : parseJsonArray(row.ServiceIdsJson).map(String);
+  const nextDuration = req.body.duration == null ? appointmentDuration(row) : numberValue(req.body.duration, appointmentDuration(row));
   if (!isStaff(req)) {
     const isOwnAppointment = String(row.ClientId) === req.user?.id;
     const clientOnlyCancellation = isOwnAppointment && nextStatus === 'cancelled';
@@ -1000,10 +1328,58 @@ app.patch('/organizations/:organizationId/appointments/:appointmentId', requireA
       return;
     }
   }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(nextDate) || parseTimeToMinutes(nextTime) === null || !nextServiceIds.length) {
+    res.status(400).json({ message: 'Fecha, hora y servicios validos son requeridos.' });
+    return;
+  }
+  if (nextStatus !== 'cancelled' && nextStatus !== 'completed' && nextStatus !== 'lost') {
+    const sameDayAppointments = await pool.request()
+      .input('organizationId', sql.NVarChar, req.params.organizationId)
+      .input('employeeId', sql.NVarChar, nextEmployeeId)
+      .input('date', sql.Date, nextDate)
+      .input('id', sql.NVarChar, req.params.appointmentId)
+      .query(`
+        SELECT Id, AppointmentTime, Duration, Status
+        FROM dbo.Appointments
+        WHERE OrganizationId = @organizationId AND EmployeeId = @employeeId AND AppointmentDate = @date AND Id <> @id
+          AND Status NOT IN ('completed', 'lost', 'cancelled')
+      `);
+    const start = parseTimeToMinutes(nextTime);
+    const end = (start ?? 0) + nextDuration;
+    const hasConflict = sameDayAppointments.recordset.some((appointment) => {
+      const appointmentStart = parseTimeToMinutes(appointment.AppointmentTime);
+      if (appointmentStart === null) return false;
+      const appointmentEnd = appointmentStart + appointmentDuration(appointment);
+      return (start ?? 0) < appointmentEnd && end > appointmentStart;
+    });
+    if (hasConflict) {
+      res.status(409).json({ message: 'Ese horario ya esta ocupado para el empleado seleccionado.' });
+      return;
+    }
+    const blocks = await pool.request()
+      .input('organizationId', sql.NVarChar, req.params.organizationId)
+      .input('employeeId', sql.NVarChar, nextEmployeeId)
+      .input('date', sql.Date, nextDate)
+      .query('SELECT StartsAt, EndsAt FROM dbo.EmployeeBlocks WHERE OrganizationId = @organizationId AND EmployeeId = @employeeId AND BlockDate = @date');
+    const hasBlockConflict = blocks.recordset.some((block) => {
+      const blockStart = parseTimeToMinutes(block.StartsAt);
+      const blockEnd = parseTimeToMinutes(block.EndsAt);
+      if (blockStart === null || blockEnd === null) return false;
+      return (start ?? 0) < blockEnd && end > blockStart;
+    });
+    if (hasBlockConflict) {
+      res.status(409).json({ message: 'Ese horario esta bloqueado para el empleado seleccionado.' });
+      return;
+    }
+  }
   await pool.request()
     .input('id', sql.NVarChar, req.params.appointmentId)
     .input('organizationId', sql.NVarChar, req.params.organizationId)
-    .input('employeeId', sql.NVarChar, String(req.body.employeeId ?? row.EmployeeId))
+    .input('employeeId', sql.NVarChar, nextEmployeeId)
+    .input('date', sql.Date, nextDate)
+    .input('time', sql.NVarChar, nextTime)
+    .input('duration', sql.Int, nextDuration)
+    .input('serviceIdsJson', sql.NVarChar, JSON.stringify(nextServiceIds))
     .input('status', sql.NVarChar, nextStatus)
     .input('paymentStatus', sql.NVarChar, enumValue(req.body.paymentStatus, paymentStatuses, String(row.PaymentStatus ?? 'not_required')))
     .input('paymentMethod', sql.NVarChar, enumValue(req.body.paymentMethod, paymentMethods, String(row.PaymentMethod ?? 'none')))
@@ -1022,15 +1398,50 @@ app.patch('/organizations/:organizationId/appointments/:appointmentId', requireA
     .input('servicePaymentMethod', sql.NVarChar, enumValue(req.body.servicePaymentMethod, paymentMethods, String(row.ServicePaymentMethod ?? 'none')))
     .input('servicePaymentStatus', sql.NVarChar, enumValue(req.body.servicePaymentStatus, paymentStatuses, String(row.ServicePaymentStatus ?? 'not_required')))
     .input('servicePaidAt', sql.DateTime2, req.body.servicePaidAt ? new Date(String(req.body.servicePaidAt)) : row.ServicePaidAt ?? null)
+    .input('total', sql.Decimal(12, 2), req.body.total == null ? numberValue(row.Total, 0) : numberValue(req.body.total, 0))
+    .input('subtotal', sql.Decimal(12, 2), req.body.subtotal == null ? numberValue(row.Subtotal, 0) : numberValue(req.body.subtotal, 0))
+    .input('discountAmount', sql.Decimal(12, 2), req.body.discountAmount == null ? numberValue(row.DiscountAmount, 0) : numberValue(req.body.discountAmount, 0))
+    .input('specialPrice', sql.Decimal(12, 2), req.body.specialPrice == null ? row.SpecialPrice ?? null : numberValue(req.body.specialPrice, 0))
     .query(`
-      UPDATE dbo.Appointments SET EmployeeId = @employeeId, Status = @status, PaymentStatus = @paymentStatus, PaymentMethod = @paymentMethod,
+      UPDATE dbo.Appointments SET EmployeeId = @employeeId, AppointmentDate = @date, AppointmentTime = @time, Duration = @duration,
+        ServiceIdsJson = @serviceIdsJson, Status = @status, PaymentStatus = @paymentStatus, PaymentMethod = @paymentMethod,
         PaymentProvider = @paymentProvider, PaymentReference = @paymentReference, PaymentStatusDetail = @paymentStatusDetail, Note = @note,
         DelayNotice = @delayNotice, DelayMinutes = @delayMinutes, CancelledAt = @cancelledAt, CancelledBy = @cancelledBy,
         CancellationReason = @cancellationReason, CancellationTiming = @cancellationTiming, RefundStatus = @refundStatus,
         ServiceRightForfeited = @serviceRightForfeited, ServicePaymentMethod = @servicePaymentMethod,
-        ServicePaymentStatus = @servicePaymentStatus, ServicePaidAt = @servicePaidAt, UpdatedAt = sysutcdatetime()
+        ServicePaymentStatus = @servicePaymentStatus, ServicePaidAt = @servicePaidAt, Total = @total, Subtotal = @subtotal,
+        DiscountAmount = @discountAmount, SpecialPrice = @specialPrice, UpdatedAt = sysutcdatetime()
       WHERE Id = @id AND OrganizationId = @organizationId
     `);
+  if (nextStatus === 'completed' || nextStatus === 'lost' || nextStatus === 'cancelled') {
+    const clientId = String(row.ClientId);
+    const spent = nextStatus === 'completed' ? numberValue(req.body.total ?? row.Total, 0) : 0;
+    const points = Math.floor(spent / 10);
+    await pool.request()
+      .input('organizationId', sql.NVarChar, req.params.organizationId)
+      .input('clientId', sql.NVarChar, clientId)
+      .input('spent', sql.Decimal(12, 2), spent)
+      .input('points', sql.Int, points)
+      .input('status', sql.NVarChar, nextStatus)
+      .input('rewardLevel', sql.NVarChar, rewardLevel(points))
+      .query(`
+        UPDATE dbo.ClientHistories
+        SET TotalSpent = TotalSpent + @spent,
+          RewardPoints = RewardPoints + @points,
+          RewardLevel = CASE
+            WHEN RewardPoints + @points >= 1000 THEN 'vip'
+            WHEN RewardPoints + @points >= 500 THEN 'gold'
+            WHEN RewardPoints + @points >= 200 THEN 'silver'
+            ELSE RewardLevel
+          END,
+          Cancellations = Cancellations + CASE WHEN @status = 'cancelled' THEN 1 ELSE 0 END,
+          NoShows = NoShows + CASE WHEN @status = 'lost' THEN 1 ELSE 0 END,
+          LastVisitAt = CASE WHEN @status = 'completed' THEN sysutcdatetime() ELSE LastVisitAt END,
+          UpdatedAt = sysutcdatetime()
+        WHERE OrganizationId = @organizationId AND ClientId = @clientId
+      `);
+  }
+  await writeAudit(paramValue(req.params.organizationId), req, 'update', 'appointment', paramValue(req.params.appointmentId), { status: nextStatus, date: nextDate, time: nextTime });
   res.json({ ok: true });
 });
 

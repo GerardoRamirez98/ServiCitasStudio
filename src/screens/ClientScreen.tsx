@@ -32,7 +32,7 @@ function getCancellationTiming(appointment: Appointment, cancellationLimitHours:
 }
 
 export function ClientScreen({ profile }: { profile: UserProfile }) {
-  const { serviceCategories, services, employees, appointments, dayNotes, announcements, portfolioItems, settings, appearance } = useOrganizationData(profile.organizationId);
+  const { serviceCategories, services, employees, appointments, dayNotes, announcements, portfolioItems, promotions, employeeBlocks, settings, appearance } = useOrganizationData(profile.organizationId);
   const brandColors = useBrandColors();
   const [selectedServiceIds, setSelectedServiceIds] = useState<string[]>([]);
   const [selectedDate, setSelectedDate] = useState(nextDates(14)[0]);
@@ -56,8 +56,8 @@ export function ClientScreen({ profile }: { profile: UserProfile }) {
   const blockedDay = dayNotes.find((day) => day.date === selectedDate && day.type === 'closed');
   const isSelectedWorkingDay = isWorkingDate(selectedDate, settings);
   const availableTimes = useMemo(
-    () => availableTimeSlots(settings, selectedDate, effectiveDuration, activeEmployees, appointments, services),
-    [activeEmployees, appointments, effectiveDuration, selectedDate, services, settings],
+    () => availableTimeSlots(settings, selectedDate, effectiveDuration, activeEmployees, appointments, services, undefined, employeeBlocks),
+    [activeEmployees, appointments, effectiveDuration, employeeBlocks, selectedDate, services, settings],
   );
   const myAppointments = appointments.filter((appointment) => appointment.clientId === profile.id || appointment.clientName === profile.name);
   const palette = getAppearancePalette(appearance);
@@ -134,7 +134,7 @@ export function ClientScreen({ profile }: { profile: UserProfile }) {
       Alert.alert('Terminos pendientes', 'Acepta la politica de puntualidad.');
       return;
     }
-    const assignedEmployee = availableEmployeesForSlot(activeEmployees, appointments, services, selectedDate, selectedTime, effectiveDuration)[0];
+    const assignedEmployee = availableEmployeesForSlot(activeEmployees, appointments, services, selectedDate, selectedTime, effectiveDuration, undefined, employeeBlocks)[0];
     if (!assignedEmployee) {
       Alert.alert('Horario ocupado', 'Ese horario acaba de ocuparse. Selecciona otro disponible.');
       return;
@@ -234,6 +234,14 @@ export function ClientScreen({ profile }: { profile: UserProfile }) {
       </Section>
 
       <Section title="Servicios" icon="sparkles-outline">
+        {promotions.filter((promotion) => promotion.active).length ? (
+          <View style={theme.styles.card}>
+            <Text style={theme.styles.sectionTitle}>Promociones disponibles</Text>
+            {promotions.filter((promotion) => promotion.active).map((promotion) => (
+              <Text key={promotion.id} style={theme.styles.mutedText}>{promotion.title}: {promotion.discountType === 'percent' ? `${promotion.discountValue}%` : `$${promotion.discountValue}`} hasta {promotion.endsAt}</Text>
+            ))}
+          </View>
+        ) : null}
         {activeServices.length ? (
           <ServicePicker
             services={activeServices}

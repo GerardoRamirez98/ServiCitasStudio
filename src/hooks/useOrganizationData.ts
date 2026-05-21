@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { apiAssetUrl, apiOrganizationBootstrap } from '../services/api';
 import { subscribeToOrganizationDataChanges } from '../services/dataEvents';
 import { defaultAppearance } from '../theme';
-import { Announcement, AppearanceSettings, Appointment, BusinessSettings, DayNote, Employee, MercadoPagoConnectionStatus, Organization, PortfolioItem, Service, ServiceCategory } from '../types';
+import { AuditLog, Announcement, AppearanceSettings, Appointment, BusinessSettings, ClientHistory, DayNote, Employee, EmployeeBlock, MercadoPagoConnectionStatus, Organization, PortfolioItem, Promotion, Service, ServiceCategory } from '../types';
 
 export const defaultSettings: BusinessSettings = {
   requireDeposit: false,
@@ -34,6 +34,10 @@ export function useOrganizationData(organizationId: string) {
   const [dayNotes, setDayNotes] = useState<DayNote[]>([]);
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [portfolioItems, setPortfolioItems] = useState<PortfolioItem[]>([]);
+  const [promotions, setPromotions] = useState<Promotion[]>([]);
+  const [clientHistories, setClientHistories] = useState<ClientHistory[]>([]);
+  const [employeeBlocks, setEmployeeBlocks] = useState<EmployeeBlock[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [settings, setSettings] = useState(defaultSettings);
   const [appearance, setAppearance] = useState(defaultAppearance);
   const [mercadoPagoConnection, setMercadoPagoConnection] = useState<MercadoPagoConnectionStatus>({ connected: false });
@@ -69,6 +73,7 @@ export function useOrganizationData(organizationId: string) {
             duration: Number(item.Duration ?? 0),
             active: Boolean(item.Active),
             categoryId: item.CategoryId ? String(item.CategoryId) : undefined,
+            employeeDurations: parseJson<Record<string, number>>(item.EmployeeDurationsJson, {}),
           })),
         );
         setServiceCategories(
@@ -93,6 +98,8 @@ export function useOrganizationData(organizationId: string) {
             compensationMode: item.CompensationMode ? String(item.CompensationMode) as Employee['compensationMode'] : undefined,
             fixedSalary: Number(item.FixedSalary ?? 0),
             commissionPercent: Number(item.CommissionPercent ?? 0),
+            serviceDurations: parseJson<Record<string, number>>(item.ServiceDurationsJson, {}),
+            scheduleOverrides: parseJson<Employee['scheduleOverrides']>(item.ScheduleOverridesJson, {}),
           })),
         );
         setAppointments(
@@ -150,6 +157,57 @@ export function useOrganizationData(organizationId: string) {
             createdAt: item.CreatedAt,
           })),
         );
+        setPromotions(
+          (data.promotions ?? []).map((item) => ({
+            id: String(item.Id),
+            title: String(item.Title),
+            description: item.Description ? String(item.Description) : undefined,
+            active: Boolean(item.Active),
+            startsAt: String(item.StartsAt).slice(0, 10),
+            endsAt: String(item.EndsAt).slice(0, 10),
+            discountType: String(item.DiscountType ?? 'percent') as Promotion['discountType'],
+            discountValue: Number(item.DiscountValue ?? 0),
+            serviceIds: parseJson<string[]>(item.ServiceIdsJson, []),
+          })),
+        );
+        setClientHistories(
+          (data.clientHistories ?? []).map((item) => ({
+            clientId: String(item.ClientId),
+            clientName: item.ClientName ? String(item.ClientName) : undefined,
+            totalAppointments: Number(item.TotalAppointments ?? 0),
+            cancellations: Number(item.Cancellations ?? 0),
+            noShows: Number(item.NoShows ?? 0),
+            totalSpent: Number(item.TotalSpent ?? 0),
+            favoriteServiceIds: parseJson<string[]>(item.FavoriteServiceIdsJson, []),
+            rewardPoints: Number(item.RewardPoints ?? 0),
+            rewardLevel: String(item.RewardLevel ?? 'bronze') as ClientHistory['rewardLevel'],
+            lastVisitAt: item.LastVisitAt,
+            notes: item.Notes ? String(item.Notes) : undefined,
+          })),
+        );
+        setEmployeeBlocks(
+          (data.employeeBlocks ?? []).map((item) => ({
+            id: String(item.Id),
+            employeeId: String(item.EmployeeId),
+            type: String(item.Type ?? 'permission') as EmployeeBlock['type'],
+            date: String(item.BlockDate).slice(0, 10),
+            startsAt: String(item.StartsAt).slice(0, 5),
+            endsAt: String(item.EndsAt).slice(0, 5),
+            note: item.Note ? String(item.Note) : undefined,
+          })),
+        );
+        setAuditLogs(
+          (data.auditLogs ?? []).map((item) => ({
+            id: String(item.Id),
+            actorId: item.ActorId ? String(item.ActorId) : undefined,
+            actorName: item.ActorName ? String(item.ActorName) : undefined,
+            action: String(item.Action),
+            entityType: String(item.EntityType),
+            entityId: item.EntityId ? String(item.EntityId) : undefined,
+            detail: item.Detail ? String(item.Detail) : undefined,
+            createdAt: item.CreatedAt,
+          })),
+        );
         const apiSettings = data.settings;
         if (apiSettings) {
           setSettings({
@@ -194,5 +252,5 @@ export function useOrganizationData(organizationId: string) {
     };
   }, [loadOrganizationData, organizationId]);
 
-  return { organization, serviceCategories, services, employees, appointments, dayNotes, announcements, portfolioItems, settings, appearance, mercadoPagoConnection, error, refetch: () => loadOrganizationData(() => true) };
+  return { organization, serviceCategories, services, employees, appointments, dayNotes, announcements, portfolioItems, promotions, clientHistories, employeeBlocks, auditLogs, settings, appearance, mercadoPagoConnection, error, refetch: () => loadOrganizationData(() => true) };
 }

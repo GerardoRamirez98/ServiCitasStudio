@@ -201,6 +201,10 @@ export async function apiOrganizationBootstrap(organizationId: string) {
     dayNotes: Record<string, unknown>[];
     announcements: Record<string, unknown>[];
     portfolioItems: Record<string, unknown>[];
+    promotions: Record<string, unknown>[];
+    clientHistories: Record<string, unknown>[];
+    employeeBlocks: Record<string, unknown>[];
+    auditLogs: Record<string, unknown>[];
   }>(`/organizations/${organizationId}/bootstrap`);
 }
 
@@ -211,4 +215,9 @@ export async function apiSqlServerHealth() {
 export async function apiFinanceReport(organizationId: string, from: string, to: string) {
   const query = `from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
   return apiGet<{ from: string; to: string; summary: PaymentSummary }>(`/organizations/${organizationId}/reports/finance?${query}`);
+}
+
+export function financeReportCsvUrl(organizationId: string, from: string, to: string) {
+  const query = `from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&format=csv`;
+  return `${apiUrl}/organizations/${organizationId}/reports/finance?${query}`;
 }

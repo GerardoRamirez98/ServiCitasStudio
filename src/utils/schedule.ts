@@ -1,4 +1,4 @@
-import { Appointment, Employee, Service } from '../types';
+import { Appointment, Employee, EmployeeBlock, Service } from '../types';
 import { buildTimeSlots, isWorkingDate } from './dates';
 
 type ScheduleSettings = Parameters<typeof buildTimeSlots>[0];
@@ -9,6 +9,20 @@ export function selectedServiceSummary(serviceIds: string[], services: Service[]
     selected,
     total: selected.reduce((sum, service) => sum + Number(service.price || 0), 0),
     duration: selected.reduce((sum, service) => sum + Number(service.duration || 0), 0),
+  };
+}
+
+export function serviceDurationForEmployee(service: Service, employeeId?: string) {
+  if (employeeId && service.employeeDurations?.[employeeId]) return Number(service.employeeDurations[employeeId]);
+  return Number(service.duration || 0);
+}
+
+export function selectedServiceSummaryForEmployee(serviceIds: string[], services: Service[], employeeId?: string) {
+  const selected = services.filter((service) => serviceIds.includes(service.id));
+  return {
+    selected,
+    total: selected.reduce((sum, service) => sum + Number(service.price || 0), 0),
+    duration: selected.reduce((sum, service) => sum + serviceDurationForEmployee(service, employeeId), 0),
   };
 }
 
@@ -37,9 +51,17 @@ export function hasScheduleConflict(
   startTime: string,
   duration: number,
   ignoreAppointmentId?: string,
+  employeeBlocks: EmployeeBlock[] = [],
 ) {
   const start = parseTime(startTime);
   const end = start + duration;
+  const blocked = employeeBlocks.some((block) => {
+    if (block.employeeId !== employeeId || block.date !== date) return false;
+    const blockStart = parseTime(block.startsAt);
+    const blockEnd = parseTime(block.endsAt);
+    return start < blockEnd && end > blockStart;
+  });
+  if (blocked) return true;
 
   return appointments.some((appointment) => {
     if (appointment.id === ignoreAppointmentId) return false;
@@ -60,8 +82,9 @@ export function employeeIsAvailable(
   appointments: Appointment[],
   services: Service[],
   ignoreAppointmentId?: string,
+  employeeBlocks: EmployeeBlock[] = [],
 ) {
-  return !hasScheduleConflict(appointments, services, employeeId, date, time, duration, ignoreAppointmentId);
+  return !hasScheduleConflict(appointments, services, employeeId, date, time, duration, ignoreAppointmentId, employeeBlocks);
 }
 
 export function availableTimeSlots(
@@ -72,6 +95,7 @@ export function availableTimeSlots(
   appointments: Appointment[],
   services: Service[],
   forcedEmployeeId?: string,
+  employeeBlocks: EmployeeBlock[] = [],
 ) {
   if (!isWorkingDate(date, settings)) return [];
   const closeTime = parseTime(settings.businessEnd);
@@ -86,7 +110,7 @@ export function availableTimeSlots(
       const breakEnd = parseTime(settings.breakEnd);
       if (breakStart < breakEnd && slotStart < breakEnd && slotEnd > breakStart) return false;
     }
-    return activeEmployees.some((employee) => employeeIsAvailable(employee.id, date, time, duration, appointments, services));
+    return activeEmployees.some((employee) => employeeIsAvailable(employee.id, date, time, duration, appointments, services, undefined, employeeBlocks));
   });
 }
 
@@ -98,9 +122,10 @@ export function availableEmployeesForSlot(
   time: string,
   duration: number,
   ignoreAppointmentId?: string,
+  employeeBlocks: EmployeeBlock[] = [],
 ) {
   return employees.filter(
-    (employee) => employee.active && employeeIsAvailable(employee.id, date, time, duration, appointments, services, ignoreAppointmentId),
+    (employee) => employee.active && employeeIsAvailable(employee.id, date, time, duration, appointments, services, ignoreAppointmentId, employeeBlocks),
   );
 }
 

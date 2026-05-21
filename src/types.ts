@@ -71,6 +71,7 @@ export type EmployeeBlock = {
   id: string;
   employeeId: string;
   type: EmployeeBlockType;
+  date?: string;
   startsAt: string;
   endsAt: string;
   note?: string;
@@ -144,6 +145,17 @@ export type Promotion = {
   serviceIds: string[];
 };
 
+export type AuditLog = {
+  id: string;
+  actorId?: string;
+  actorName?: string;
+  action: string;
+  entityType: string;
+  entityId?: string;
+  detail?: string;
+  createdAt?: unknown;
+};
+
 export type PortfolioItem = {
   id: string;
   title: string;
@@ -159,6 +171,7 @@ export type ClientRewardLevel = 'bronze' | 'silver' | 'gold' | 'vip';
 
 export type ClientHistory = {
   clientId: string;
+  clientName?: string;
   totalAppointments: number;
   cancellations: number;
   noShows: number;

@@ -5,6 +5,7 @@ declare global {
     interface Request {
       user?: {
         id: string;
+        name?: string;
         role: UserRole;
         organizationId: string;
       };

@@ -28,8 +28,12 @@ npm start
 - Autenticacion con JWT y roles por negocio.
 - Registro de negocio con direccion, clientes por codigo publico y empleados por codigo privado.
 - Agenda con servicios, empleados, horarios laborales, descansos, dias especiales y bloqueo de empalmes desde la API.
+- Categorias de servicios, portafolio de trabajos con imagenes y promociones automaticas por fecha/servicio.
+- Historial de clientes con puntos, nivel de recompensa, notas internas y auditoria reciente.
+- Bloqueos individuales de empleado que se respetan al buscar horarios disponibles.
 - Mutaciones del negocio refrescan la informacion visible de la app automaticamente.
 - Anticipos en modo self-hosted: se registran y confirman manualmente.
+- Reportes financieros por rango y exportacion CSV.
 - Logo del negocio subido al backend como archivo; SQL Server guarda solo la ruta.
 
 ## Pendiente externo

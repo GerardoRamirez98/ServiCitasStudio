@@ -5,7 +5,7 @@ import { createAppointment } from '../services/appointments';
 import { readableApiError } from '../services/errors';
 import { theme } from '../theme';
 import { useBrandColors } from '../theme-context';
-import { Appointment, BusinessSettings, DayNote, Employee, Service } from '../types';
+import { Appointment, BusinessSettings, DayNote, Employee, EmployeeBlock, Service } from '../types';
 import { dateLabel, isWorkingDate, nextDates } from '../utils/dates';
 import { addMinutes, availableEmployeesForSlot, availableTimeSlots, selectedServiceSummary } from '../utils/schedule';
 import { EmptyState, LabeledInput, Pill, PrimaryButton, SmallButton } from './ui';
@@ -17,6 +17,7 @@ export function ManualAppointmentModal({
   employees,
   appointments,
   dayNotes,
+  employeeBlocks = [],
   settings,
   forcedEmployeeId,
   onClose,
@@ -27,6 +28,7 @@ export function ManualAppointmentModal({
   employees: Employee[];
   appointments: Appointment[];
   dayNotes: DayNote[];
+  employeeBlocks?: EmployeeBlock[];
   settings: BusinessSettings;
   forcedEmployeeId?: string;
   onClose: () => void;
@@ -54,12 +56,12 @@ export function ManualAppointmentModal({
   const blockedDay = dayNotes.find((day) => day.date === selectedDate && day.type === 'closed');
   const isSelectedWorkingDay = isWorkingDate(selectedDate, settings);
   const timeOptions = useMemo(
-    () => availableTimeSlots(settings, selectedDate, effectiveDuration, activeEmployees, appointments, services, forcedEmployeeId),
-    [activeEmployees, appointments, effectiveDuration, forcedEmployeeId, selectedDate, services, settings],
+    () => availableTimeSlots(settings, selectedDate, effectiveDuration, activeEmployees, appointments, services, forcedEmployeeId, employeeBlocks),
+    [activeEmployees, appointments, effectiveDuration, employeeBlocks, forcedEmployeeId, selectedDate, services, settings],
   );
   const employeeOptions = useMemo(
-    () => (selectedTime ? availableEmployeesForSlot(activeEmployees, appointments, services, selectedDate, selectedTime, effectiveDuration) : activeEmployees),
-    [activeEmployees, appointments, effectiveDuration, selectedDate, selectedTime, services],
+    () => (selectedTime ? availableEmployeesForSlot(activeEmployees, appointments, services, selectedDate, selectedTime, effectiveDuration, undefined, employeeBlocks) : activeEmployees),
+    [activeEmployees, appointments, effectiveDuration, employeeBlocks, selectedDate, selectedTime, services],
   );
 
   useEffect(() => {

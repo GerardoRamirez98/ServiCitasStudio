@@ -1,25 +1,25 @@
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Animated, Image, Modal, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { Alert, Animated, Image, Linking, Modal, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { AppointmentCard } from '../components/AppointmentCard';
 import { ManualAppointmentModal } from '../components/ManualAppointmentModal';
 import { emptyAddress, formatAddress, isAddressComplete, OrganizationAddressFields } from '../components/OrganizationAddressFields';
 import { EmptyState, IconButton, LabeledInput, Pill, PrimaryButton, Section, SmallButton } from '../components/ui';
 import { useOrganizationData } from '../hooks/useOrganizationData';
-import { apiAssetUrl, apiDelete, apiFinanceReport, apiPatch, apiPost, apiPut, apiStoredAssetPath, apiUploadOrganizationLogo, apiUploadPortfolioImage } from '../services/api';
+import { apiAssetUrl, apiDelete, apiFinanceReport, apiPatch, apiPost, apiPut, apiStoredAssetPath, apiUploadOrganizationLogo, apiUploadPortfolioImage, financeReportCsvUrl } from '../services/api';
 import { readableApiError } from '../services/errors';
 import { buildPaymentSummary } from '../services/finance';
 import { disconnectMercadoPago } from '../services/payments';
 import { checkSqlServerConnection } from '../services/sqlServer';
 import { appearancePresets, defaultAppearance, getAppearancePalette, theme } from '../theme';
 import { useBrandColors } from '../theme-context';
-import { Announcement, AppearanceSettings, Appointment, BusinessSettings, DayNote, Employee, MercadoPagoConnectionStatus, OrganizationAddress, PaymentSummary, PortfolioItem, Service, ServiceCategory, UserProfile } from '../types';
+import { AuditLog, Announcement, AppearanceSettings, Appointment, BusinessSettings, ClientHistory, DayNote, Employee, EmployeeBlock, MercadoPagoConnectionStatus, OrganizationAddress, PaymentSummary, PortfolioItem, Promotion, Service, ServiceCategory, UserProfile } from '../types';
 import { makeEmployeeInviteCode } from '../utils/codes';
 import { dateLabel, monthMatrix, monthTitle, toDateId, weekDays } from '../utils/dates';
 import { appointmentDuration, availableEmployeesForSlot, formatDuration } from '../utils/schedule';
 
-type AdminTab = 'business' | 'agenda' | 'history' | 'schedule' | 'calendar' | 'services' | 'employees' | 'announcements' | 'payments' | 'settings';
+type AdminTab = 'business' | 'agenda' | 'history' | 'schedule' | 'calendar' | 'services' | 'employees' | 'clients' | 'announcements' | 'payments' | 'settings';
 
 const finalAppointmentStatuses = ['completed', 'lost', 'cancelled'];
 const adminTabItems: { key: AdminTab; label: string; icon: keyof typeof Ionicons.glyphMap; helper: string }[] = [
@@ -28,6 +28,7 @@ const adminTabItems: { key: AdminTab; label: string; icon: keyof typeof Ionicons
   { key: 'history', label: 'Historial', icon: 'document-text-outline', helper: 'Citas cerradas por fecha' },
   { key: 'services', label: 'Servicios', icon: 'cut-outline', helper: 'Precios y duraciones' },
   { key: 'employees', label: 'Equipo', icon: 'people-outline', helper: 'Empleados y rendimiento' },
+  { key: 'clients', label: 'Clientes', icon: 'heart-outline', helper: 'Historial, puntos y notas' },
   { key: 'announcements', label: 'Avisos', icon: 'megaphone-outline', helper: 'Promos y eventos' },
   { key: 'payments', label: 'Pagos', icon: 'wallet-outline', helper: 'Anticipos y Mercado Pago' },
   { key: 'schedule', label: 'Horario', icon: 'time-outline', helper: 'Jornada y descansos' },
@@ -46,13 +47,21 @@ function employeePerformance(employee: Employee, appointments: Appointment[]) {
   return { completed: completed.length, generated, commission };
 }
 
+function matchesQuery(values: unknown[], query: string) {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return true;
+  return values.some((value) => String(value ?? '').toLowerCase().includes(normalized));
+}
+
 export function AdminScreen({ profile }: { profile: UserProfile }) {
-  const { organization, serviceCategories, services, employees, appointments, dayNotes, announcements, portfolioItems, settings, appearance, mercadoPagoConnection } = useOrganizationData(profile.organizationId);
+  const { organization, serviceCategories, services, employees, appointments, dayNotes, announcements, portfolioItems, promotions, clientHistories, employeeBlocks, auditLogs, settings, appearance, mercadoPagoConnection } = useOrganizationData(profile.organizationId);
   const brandColors = useBrandColors();
   const [tab, setTab] = useState<AdminTab>('business');
   const [serviceDraft, setServiceDraft] = useState<Service | null>(null);
   const [categoryDraft, setCategoryDraft] = useState<ServiceCategory | null>(null);
   const [portfolioDraft, setPortfolioDraft] = useState<PortfolioItem | null>(null);
+  const [promotionDraft, setPromotionDraft] = useState<Promotion | null>(null);
+  const [employeeBlockDraft, setEmployeeBlockDraft] = useState<EmployeeBlock | null>(null);
   const [employeeDraft, setEmployeeDraft] = useState<Employee | null>(null);
   const [manualAppointmentOpen, setManualAppointmentOpen] = useState(false);
   const [dayDraft, setDayDraft] = useState<DayNote>({ id: '', date: toDateId(new Date()), type: 'closed', note: '' });
@@ -65,6 +74,10 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
   const [settingsDraft, setSettingsDraft] = useState(settings);
   const [appearanceDraft, setAppearanceDraft] = useState(appearance);
   const [historyDate, setHistoryDate] = useState(toDateId(new Date()));
+  const [agendaQuery, setAgendaQuery] = useState('');
+  const [historyQuery, setHistoryQuery] = useState('');
+  const [serviceQuery, setServiceQuery] = useState('');
+  const [employeeQuery, setEmployeeQuery] = useState('');
   const [reportFrom, setReportFrom] = useState(toDateId(new Date()));
   const [reportTo, setReportTo] = useState(toDateId(new Date()));
   const [financeReport, setFinanceReport] = useState<PaymentSummary | null>(null);
@@ -75,9 +88,13 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
   });
   const historyDateOptions = useMemo(() => relativeDates(14, 14), []);
   const activeAppointments = useMemo(() => appointments.filter((appointment) => !isFinalAppointment(appointment)), [appointments]);
+  const filteredActiveAppointments = useMemo(
+    () => activeAppointments.filter((appointment) => matchesQuery([appointment.clientName, appointment.note, appointment.date, appointment.time], agendaQuery)),
+    [activeAppointments, agendaQuery],
+  );
   const historyAppointments = useMemo(
-    () => appointments.filter((appointment) => appointment.date === historyDate && isFinalAppointment(appointment)),
-    [appointments, historyDate],
+    () => appointments.filter((appointment) => appointment.date === historyDate && isFinalAppointment(appointment) && matchesQuery([appointment.clientName, appointment.note, appointment.status], historyQuery)),
+    [appointments, historyDate, historyQuery],
   );
 
   useEffect(() => setSettingsDraft(settings), [settings]);
@@ -120,6 +137,7 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
       duration: Number(serviceDraft.duration || 0),
       active: serviceDraft.active,
       categoryId: serviceDraft.categoryId ?? '',
+      employeeDurations: serviceDraft.employeeDurations ?? {},
     };
     if (serviceDraft.id) {
       await apiPut(`/organizations/${profile.organizationId}/services/${serviceDraft.id}`, payload);
@@ -142,6 +160,39 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
       await apiPost(`/organizations/${profile.organizationId}/service-categories`, payload);
     }
     setCategoryDraft(null);
+  }
+
+  async function savePromotion() {
+    if (!promotionDraft?.title.trim()) return;
+    const payload = {
+      title: promotionDraft.title.trim(),
+      description: promotionDraft.description?.trim() ?? '',
+      active: promotionDraft.active,
+      startsAt: promotionDraft.startsAt,
+      endsAt: promotionDraft.endsAt,
+      discountType: promotionDraft.discountType,
+      discountValue: Number(promotionDraft.discountValue || 0),
+      serviceIds: promotionDraft.serviceIds,
+    };
+    if (promotionDraft.id) {
+      await apiPut(`/organizations/${profile.organizationId}/promotions/${promotionDraft.id}`, payload);
+    } else {
+      await apiPost(`/organizations/${profile.organizationId}/promotions`, payload);
+    }
+    setPromotionDraft(null);
+  }
+
+  async function saveEmployeeBlock() {
+    if (!employeeBlockDraft?.employeeId || !employeeBlockDraft.date) return;
+    await apiPost(`/organizations/${profile.organizationId}/employee-blocks`, {
+      employeeId: employeeBlockDraft.employeeId,
+      type: employeeBlockDraft.type,
+      date: employeeBlockDraft.date,
+      startsAt: employeeBlockDraft.startsAt,
+      endsAt: employeeBlockDraft.endsAt,
+      note: employeeBlockDraft.note ?? '',
+    });
+    setEmployeeBlockDraft(null);
   }
 
   async function pickPortfolioImage() {
@@ -210,6 +261,8 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
       compensationMode: employeeDraft.compensationMode ?? 'commission',
       fixedSalary: Number(employeeDraft.fixedSalary || 0),
       commissionPercent: Number(employeeDraft.commissionPercent || 0),
+      serviceDurations: employeeDraft.serviceDurations ?? {},
+      scheduleOverrides: employeeDraft.scheduleOverrides ?? {},
     };
 
     let employeeId = employeeDraft.id;
@@ -542,9 +595,11 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
         <>
           <Section title="Agenda activa" icon="calendar-outline">
             <PrimaryButton icon="add-circle" label="Agregar cita manual" onPress={() => setManualAppointmentOpen(true)} />
+            <LabeledInput label="Buscar en agenda" placeholder="Cliente, nota, fecha u hora" value={agendaQuery} onChangeText={setAgendaQuery} />
+            <AgendaSnapshot appointments={activeAppointments} />
             <Text style={theme.styles.mutedText}>Las citas terminadas, perdidas o canceladas salen automaticamente de esta vista y pasan al historial.</Text>
-            {activeAppointments.length ? (
-              activeAppointments.map((appointment) => (
+            {filteredActiveAppointments.length ? (
+              filteredActiveAppointments.map((appointment) => (
                 <AppointmentCard
                   key={appointment.id}
                   appointment={appointment}
@@ -589,6 +644,7 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
                           appointment.time,
                           appointmentDuration(appointment, services),
                           appointment.id,
+                          employeeBlocks,
                         ).map((employee) => (
                             <Pill
                               key={employee.id}
@@ -613,6 +669,8 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
         <HistoryByDay
           historyDate={historyDate}
           setHistoryDate={setHistoryDate}
+          historyQuery={historyQuery}
+          setHistoryQuery={setHistoryQuery}
           historyDateOptions={historyDateOptions}
           appointments={historyAppointments}
           services={services}
@@ -650,14 +708,15 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
               <PrimaryButton icon="folder-open" label="Nueva categoria" onPress={() => setCategoryDraft({ id: '', name: '', slug: '', active: true, sortOrder: serviceCategories.length + 1 })} />
             </View>
           </View>
+          <LabeledInput label="Buscar servicios" placeholder="Nombre, categoria o precio" value={serviceQuery} onChangeText={setServiceQuery} />
           <ServiceCategoriesList
             categories={serviceCategories}
             services={services}
             onEdit={setCategoryDraft}
             onDelete={(category) => apiDelete(`/organizations/${profile.organizationId}/service-categories/${category.id}`)}
           />
-          {services.length ? (
-            services.map((service) => (
+          {services.filter((service) => matchesQuery([service.name, service.price, serviceCategories.find((category) => category.id === service.categoryId)?.name], serviceQuery)).length ? (
+            services.filter((service) => matchesQuery([service.name, service.price, serviceCategories.find((category) => category.id === service.categoryId)?.name], serviceQuery)).map((service) => (
               <View key={service.id} style={theme.styles.rowCard}>
                 <Ionicons name={service.active ? 'checkmark-circle-outline' : 'pause-circle-outline'} size={22} color={service.active ? brandColors.primary : theme.colors.muted} />
                 <View style={theme.styles.grow}>
@@ -681,14 +740,23 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
             onEdit={setPortfolioDraft}
             onDelete={(item) => apiDelete(`/organizations/${profile.organizationId}/portfolio/${item.id}`)}
           />
+          <PromotionsAdmin
+            promotions={promotions}
+            services={services}
+            onNew={() => setPromotionDraft({ id: '', title: '', description: '', active: true, startsAt: toDateId(new Date()), endsAt: toDateId(new Date()), discountType: 'percent', discountValue: 10, serviceIds: [] })}
+            onEdit={setPromotionDraft}
+            onDelete={(promotion) => apiDelete(`/organizations/${profile.organizationId}/promotions/${promotion.id}`)}
+          />
         </Section>
       ) : null}
 
       {tab === 'employees' ? (
         <Section title="Empleados" icon="people-outline">
           <PrimaryButton icon="person-add" label="Registrar empleado" onPress={() => setEmployeeDraft({ id: '', name: '', email: '', role: '', specialties: [], active: true, compensationMode: 'commission', fixedSalary: 0, commissionPercent: 0 })} />
-          {employees.length ? (
-            employees.map((employee) => {
+          <PrimaryButton icon="ban" label="Bloquear horario" onPress={() => setEmployeeBlockDraft({ id: '', employeeId: employees[0]?.id ?? '', type: 'permission', date: toDateId(new Date()), startsAt: '09:00', endsAt: '10:00', note: '' })} />
+          <LabeledInput label="Buscar empleados" placeholder="Nombre, correo, puesto o especialidad" value={employeeQuery} onChangeText={setEmployeeQuery} />
+          {employees.filter((employee) => matchesQuery([employee.name, employee.email, employee.role, ...(employee.specialties ?? [])], employeeQuery)).length ? (
+            employees.filter((employee) => matchesQuery([employee.name, employee.email, employee.role, ...(employee.specialties ?? [])], employeeQuery)).map((employee) => {
               const performance = employeePerformance(employee, appointments);
               return (
                 <View key={employee.id} style={theme.styles.rowCard}>
@@ -709,7 +777,25 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
           ) : (
             <EmptyState text="Registra empleados y comparte el ID de organizacion para que creen su cuenta." />
           )}
+          <EmployeeBlocksAdmin
+            blocks={employeeBlocks}
+            employees={employees}
+            onDelete={(block) => apiDelete(`/organizations/${profile.organizationId}/employee-blocks/${block.id}`)}
+          />
         </Section>
+      ) : null}
+
+      {tab === 'clients' ? (
+        <ClientsAdmin
+          clients={clientHistories}
+          auditLogs={auditLogs}
+          onSaveNotes={(client, notes) =>
+            apiPut(`/organizations/${profile.organizationId}/client-histories/${client.clientId}`, {
+              clientName: client.clientName ?? client.clientId,
+              notes,
+            })
+          }
+        />
       ) : null}
 
       {tab === 'announcements' ? (
@@ -763,6 +849,7 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
           onReportFromChange={setReportFrom}
           onReportToChange={setReportTo}
           onLoadFinanceReport={loadFinanceReport}
+          onExportFinanceCsv={() => Linking.openURL(financeReportCsvUrl(profile.organizationId, reportFrom, reportTo))}
           financeReport={financeReport}
           financeReportBusy={financeReportBusy}
         />
@@ -783,9 +870,11 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
         />
       ) : null}
 
-      <ServiceModal draft={serviceDraft} categories={serviceCategories} setDraft={setServiceDraft} onSave={saveService} />
+      <ServiceModal draft={serviceDraft} categories={serviceCategories} employees={employees} setDraft={setServiceDraft} onSave={saveService} />
       <ServiceCategoryModal draft={categoryDraft} setDraft={setCategoryDraft} onSave={saveCategory} />
       <PortfolioModal draft={portfolioDraft} categories={serviceCategories} employees={employees} setDraft={setPortfolioDraft} onPickImage={pickPortfolioImage} onSave={savePortfolioItem} />
+      <PromotionModal draft={promotionDraft} services={services} setDraft={setPromotionDraft} onSave={savePromotion} />
+      <EmployeeBlockModal draft={employeeBlockDraft} employees={employees} setDraft={setEmployeeBlockDraft} onSave={saveEmployeeBlock} />
       <EmployeeModal draft={employeeDraft} setDraft={setEmployeeDraft} onSave={saveEmployee} />
       <ManualAppointmentModal
         visible={manualAppointmentOpen}
@@ -794,6 +883,7 @@ export function AdminScreen({ profile }: { profile: UserProfile }) {
         employees={employees}
         appointments={appointments}
         dayNotes={dayNotes}
+        employeeBlocks={employeeBlocks}
         settings={settings}
         onClose={() => setManualAppointmentOpen(false)}
       />
@@ -1000,9 +1090,32 @@ function StatCard({ label, value, helper }: { label: string; value: number | str
   );
 }
 
+function AgendaSnapshot({ appointments }: { appointments: Appointment[] }) {
+  const brandColors = useBrandColors();
+  const today = toDateId(new Date());
+  const todayAppointments = appointments.filter((appointment) => appointment.date === today);
+  const weekDates = relativeDates(0, 6);
+  return (
+    <View style={theme.styles.card}>
+      <Text style={[theme.styles.eyebrow, { color: brandColors.primary }]}>Vista semanal</Text>
+      <View style={theme.styles.statGrid}>
+        <StatCard label="Hoy" value={todayAppointments.length} helper="citas" />
+        <StatCard label="Semana" value={appointments.filter((appointment) => weekDates.includes(appointment.date)).length} helper="citas activas" />
+      </View>
+      <View style={theme.styles.pillWrap}>
+        {weekDates.map((date) => (
+          <Pill key={date} label={`${dateLabel(date)} (${appointments.filter((appointment) => appointment.date === date).length})`} active={date === today} onPress={() => undefined} />
+        ))}
+      </View>
+    </View>
+  );
+}
+
 function HistoryByDay({
   historyDate,
   setHistoryDate,
+  historyQuery,
+  setHistoryQuery,
   historyDateOptions,
   appointments,
   services,
@@ -1011,6 +1124,8 @@ function HistoryByDay({
 }: {
   historyDate: string;
   setHistoryDate: (date: string) => void;
+  historyQuery: string;
+  setHistoryQuery: (query: string) => void;
   historyDateOptions: string[];
   appointments: Appointment[];
   services: Service[];
@@ -1033,6 +1148,7 @@ function HistoryByDay({
           <Ionicons name="calendar-number-outline" size={28} color={brandColors.primary} />
         </View>
         <LabeledInput label="Ir a fecha" helper="AAAA-MM-DD" placeholder="2026-05-12" value={historyDate} onChangeText={setHistoryDate} />
+        <LabeledInput label="Buscar en historial" placeholder="Cliente, estado o nota" value={historyQuery} onChangeText={setHistoryQuery} />
         <ScrollView horizontal showsHorizontalScrollIndicator={false}>
           <View style={theme.styles.row}>
             {historyDateOptions.map((date) => (
@@ -1218,6 +1334,7 @@ function PaymentsForm({
   onReportFromChange,
   onReportToChange,
   onLoadFinanceReport,
+  onExportFinanceCsv,
   financeReport,
   financeReportBusy,
 }: {
@@ -1233,6 +1350,7 @@ function PaymentsForm({
   onReportFromChange: (value: string) => void;
   onReportToChange: (value: string) => void;
   onLoadFinanceReport: () => void;
+  onExportFinanceCsv: () => void;
   financeReport: PaymentSummary | null;
   financeReportBusy: boolean;
 }) {
@@ -1259,6 +1377,7 @@ function PaymentsForm({
           </View>
         </View>
         <SmallButton label={financeReportBusy ? 'Cargando...' : 'Cargar reporte'} onPress={onLoadFinanceReport} />
+        <SmallButton label="Exportar CSV" onPress={onExportFinanceCsv} />
       </View>
       <View style={theme.styles.card}>
         <Text style={theme.styles.sectionTitle}>Metodos de pago</Text>
@@ -1938,7 +2057,123 @@ function PortfolioAdmin({
   );
 }
 
-function ServiceModal({ draft, categories, setDraft, onSave }: { draft: Service | null; categories: ServiceCategory[]; setDraft: (service: Service | null) => void; onSave: () => void }) {
+function PromotionsAdmin({
+  promotions,
+  services,
+  onNew,
+  onEdit,
+  onDelete,
+}: {
+  promotions: Promotion[];
+  services: Service[];
+  onNew: () => void;
+  onEdit: (promotion: Promotion) => void;
+  onDelete: (promotion: Promotion) => void;
+}) {
+  const brandColors = useBrandColors();
+  return (
+    <View style={theme.styles.card}>
+      <View style={theme.styles.rowBetween}>
+        <View style={theme.styles.grow}>
+          <Text style={[theme.styles.eyebrow, { color: brandColors.primary }]}>Promociones automaticas</Text>
+          <Text style={theme.styles.mutedText}>Se aplican solas cuando el cliente agenda dentro del rango y servicios configurados.</Text>
+        </View>
+        <SmallButton label="Nueva promo" onPress={onNew} />
+      </View>
+      {promotions.length ? (
+        promotions.map((promotion) => (
+          <View key={promotion.id} style={theme.styles.rowCard}>
+            <Ionicons name={promotion.active ? 'pricetag-outline' : 'pause-circle-outline'} size={22} color={promotion.active ? brandColors.primary : theme.colors.muted} />
+            <View style={theme.styles.grow}>
+              <Text style={theme.styles.text}>{promotion.title}</Text>
+              <Text style={theme.styles.mutedText}>
+                {promotion.startsAt} a {promotion.endsAt} · {promotion.discountType === 'percent' ? `${promotion.discountValue}%` : `$${promotion.discountValue}`} · {promotion.serviceIds.length ? `${promotion.serviceIds.length} servicio(s)` : 'todos los servicios'}
+              </Text>
+              {promotion.serviceIds.length ? <Text style={theme.styles.mutedText}>{promotion.serviceIds.map((id) => services.find((service) => service.id === id)?.name).filter(Boolean).join(', ')}</Text> : null}
+            </View>
+            <IconButton icon="create-outline" onPress={() => onEdit(promotion)} />
+            <IconButton icon="trash-outline" onPress={() => onDelete(promotion)} />
+          </View>
+        ))
+      ) : (
+        <EmptyState text="No hay promociones activas o programadas." />
+      )}
+    </View>
+  );
+}
+
+function EmployeeBlocksAdmin({ blocks, employees, onDelete }: { blocks: EmployeeBlock[]; employees: Employee[]; onDelete: (block: EmployeeBlock) => void }) {
+  return (
+    <View style={theme.styles.card}>
+      <Text style={theme.styles.sectionTitle}>Bloqueos de horario</Text>
+      {blocks.length ? (
+        blocks.map((block) => (
+          <View key={block.id} style={theme.styles.rowCard}>
+            <Ionicons name="ban-outline" size={22} color={theme.colors.danger} />
+            <View style={theme.styles.grow}>
+              <Text style={theme.styles.text}>{employees.find((employee) => employee.id === block.employeeId)?.name ?? 'Empleado'}</Text>
+              <Text style={theme.styles.mutedText}>{block.date} · {block.startsAt}-{block.endsAt} · {block.type}</Text>
+              {block.note ? <Text style={theme.styles.mutedText}>{block.note}</Text> : null}
+            </View>
+            <IconButton icon="trash-outline" onPress={() => onDelete(block)} />
+          </View>
+        ))
+      ) : (
+        <EmptyState text="No hay bloqueos individuales registrados." />
+      )}
+    </View>
+  );
+}
+
+function ClientsAdmin({
+  clients,
+  auditLogs,
+  onSaveNotes,
+}: {
+  clients: ClientHistory[];
+  auditLogs: AuditLog[];
+  onSaveNotes: (client: ClientHistory, notes: string) => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [notesDraft, setNotesDraft] = useState<Record<string, string>>({});
+  const filteredClients = clients.filter((client) => matchesQuery([client.clientName, client.clientId, client.rewardLevel, client.notes], query));
+  return (
+    <Section title="Clientes e historial" icon="heart-outline">
+      <LabeledInput label="Buscar clientes" placeholder="Cliente, nivel o nota" value={query} onChangeText={setQuery} />
+      {filteredClients.length ? (
+        filteredClients.map((client) => (
+          <View key={client.clientId} style={theme.styles.card}>
+            <Text style={theme.styles.sectionTitle}>{client.clientName ?? client.clientId}</Text>
+            <Text style={theme.styles.mutedText}>Citas: {client.totalAppointments} · Cancelaciones: {client.cancellations} · Perdidas: {client.noShows}</Text>
+            <Text style={theme.styles.mutedText}>Gastado: ${client.totalSpent} · Puntos: {client.rewardPoints} · Nivel: {client.rewardLevel}</Text>
+            <LabeledInput
+              label="Notas internas"
+              style={theme.styles.textArea}
+              value={notesDraft[client.clientId] ?? client.notes ?? ''}
+              onChangeText={(notes) => setNotesDraft({ ...notesDraft, [client.clientId]: notes })}
+              multiline
+            />
+            <SmallButton label="Guardar notas" onPress={() => onSaveNotes(client, notesDraft[client.clientId] ?? client.notes ?? '')} />
+          </View>
+        ))
+      ) : (
+        <EmptyState text="Aun no hay historial de clientes." />
+      )}
+      <View style={theme.styles.card}>
+        <Text style={theme.styles.sectionTitle}>Auditoria reciente</Text>
+        {auditLogs.length ? (
+          auditLogs.slice(0, 20).map((log) => (
+            <Text key={log.id} style={theme.styles.mutedText}>{String(log.createdAt).slice(0, 19)} · {log.actorName ?? 'Sistema'} · {log.action} {log.entityType}</Text>
+          ))
+        ) : (
+          <EmptyState text="Aun no hay movimientos auditados." />
+        )}
+      </View>
+    </Section>
+  );
+}
+
+function ServiceModal({ draft, categories, employees, setDraft, onSave }: { draft: Service | null; categories: ServiceCategory[]; employees: Employee[]; setDraft: (service: Service | null) => void; onSave: () => void }) {
   const brandColors = useBrandColors();
 
   function updateDuration(part: 'hours' | 'minutes', rawValue: string) {
@@ -1989,6 +2224,23 @@ function ServiceModal({ draft, categories, setDraft, onSave }: { draft: Service 
               </View>
             </View>
             <Text style={theme.styles.mutedText}>Duracion final: {formatDuration(draft.duration)}</Text>
+            <Text style={theme.styles.sectionTitle}>Duracion por empleado</Text>
+            <Text style={theme.styles.mutedText}>Opcional. Si se deja en blanco usa la duracion general.</Text>
+            {employees.map((employee) => (
+              <LabeledInput
+                key={employee.id}
+                label={employee.name}
+                helper="Minutos para este empleado"
+                keyboardType="numeric"
+                value={draft.employeeDurations?.[employee.id] ? String(draft.employeeDurations[employee.id]) : ''}
+                onChangeText={(value) => {
+                  const next = { ...(draft.employeeDurations ?? {}) };
+                  if (value.trim()) next[employee.id] = Number(value || 0);
+                  else delete next[employee.id];
+                  setDraft({ ...draft, employeeDurations: next });
+                }}
+              />
+            ))}
             <Pressable style={theme.styles.row} onPress={() => setDraft({ ...draft, active: !draft.active })}>
               <Ionicons name={draft.active ? 'checkbox' : 'square-outline'} size={22} color={brandColors.primaryDark} />
               <Text style={theme.styles.text}>Servicio activo</Text>
@@ -2079,6 +2331,97 @@ function PortfolioModal({
                 <SmallButton label="Guardar" onPress={onSave} />
               </View>
             </ScrollView>
+          </View>
+        ) : null}
+      </View>
+    </Modal>
+  );
+}
+
+function PromotionModal({ draft, services, setDraft, onSave }: { draft: Promotion | null; services: Service[]; setDraft: (promotion: Promotion | null) => void; onSave: () => void }) {
+  function toggleService(serviceId: string) {
+    if (!draft) return;
+    setDraft({ ...draft, serviceIds: draft.serviceIds.includes(serviceId) ? draft.serviceIds.filter((id) => id !== serviceId) : [...draft.serviceIds, serviceId] });
+  }
+  return (
+    <Modal visible={!!draft} transparent animationType="slide">
+      <View style={theme.styles.modalShade}>
+        {draft ? (
+          <View style={[theme.styles.modalCard, { maxHeight: '92%' }]}>
+            <ScrollView contentContainerStyle={{ gap: 12 }}>
+              <Text style={theme.styles.title}>{draft.id ? 'Editar promocion' : 'Nueva promocion'}</Text>
+              <LabeledInput label="Titulo" value={draft.title} onChangeText={(title) => setDraft({ ...draft, title })} />
+              <LabeledInput label="Descripcion" value={draft.description ?? ''} onChangeText={(description) => setDraft({ ...draft, description })} />
+              <View style={theme.styles.row}>
+                <View style={theme.styles.grow}>
+                  <LabeledInput label="Inicia" helper="AAAA-MM-DD" value={draft.startsAt} onChangeText={(startsAt) => setDraft({ ...draft, startsAt })} />
+                </View>
+                <View style={theme.styles.grow}>
+                  <LabeledInput label="Termina" helper="AAAA-MM-DD" value={draft.endsAt} onChangeText={(endsAt) => setDraft({ ...draft, endsAt })} />
+                </View>
+              </View>
+              <Text style={theme.styles.sectionTitle}>Tipo de descuento</Text>
+              <View style={theme.styles.pillWrap}>
+                <Pill label="Porcentaje" active={draft.discountType === 'percent'} onPress={() => setDraft({ ...draft, discountType: 'percent' })} />
+                <Pill label="Monto fijo" active={draft.discountType === 'fixed'} onPress={() => setDraft({ ...draft, discountType: 'fixed' })} />
+              </View>
+              <LabeledInput label="Valor" keyboardType="numeric" value={String(draft.discountValue)} onChangeText={(discountValue) => setDraft({ ...draft, discountValue: Number(discountValue || 0) })} />
+              <Text style={theme.styles.sectionTitle}>Servicios</Text>
+              <Text style={theme.styles.mutedText}>Si no eliges servicios, aplica a todos.</Text>
+              <View style={theme.styles.pillWrap}>
+                {services.map((service) => (
+                  <Pill key={service.id} label={service.name} active={draft.serviceIds.includes(service.id)} onPress={() => toggleService(service.id)} />
+                ))}
+              </View>
+              <Pressable style={theme.styles.row} onPress={() => setDraft({ ...draft, active: !draft.active })}>
+                <Ionicons name={draft.active ? 'checkbox' : 'square-outline'} size={22} color={theme.colors.primaryDark} />
+                <Text style={theme.styles.text}>Promocion activa</Text>
+              </Pressable>
+              <View style={theme.styles.row}>
+                <SmallButton label="Cancelar" onPress={() => setDraft(null)} />
+                <SmallButton label="Guardar" onPress={onSave} />
+              </View>
+            </ScrollView>
+          </View>
+        ) : null}
+      </View>
+    </Modal>
+  );
+}
+
+function EmployeeBlockModal({ draft, employees, setDraft, onSave }: { draft: EmployeeBlock | null; employees: Employee[]; setDraft: (block: EmployeeBlock | null) => void; onSave: () => void }) {
+  return (
+    <Modal visible={!!draft} transparent animationType="slide">
+      <View style={theme.styles.modalShade}>
+        {draft ? (
+          <View style={theme.styles.modalCard}>
+            <Text style={theme.styles.title}>Bloquear horario</Text>
+            <Text style={theme.styles.sectionTitle}>Empleado</Text>
+            <View style={theme.styles.pillWrap}>
+              {employees.map((employee) => (
+                <Pill key={employee.id} label={employee.name} active={draft.employeeId === employee.id} onPress={() => setDraft({ ...draft, employeeId: employee.id })} />
+              ))}
+            </View>
+            <LabeledInput label="Fecha" helper="AAAA-MM-DD" value={draft.date ?? ''} onChangeText={(date) => setDraft({ ...draft, date })} />
+            <View style={theme.styles.row}>
+              <View style={theme.styles.grow}>
+                <LabeledInput label="Inicio" value={draft.startsAt} onChangeText={(startsAt) => setDraft({ ...draft, startsAt })} />
+              </View>
+              <View style={theme.styles.grow}>
+                <LabeledInput label="Fin" value={draft.endsAt} onChangeText={(endsAt) => setDraft({ ...draft, endsAt })} />
+              </View>
+            </View>
+            <Text style={theme.styles.sectionTitle}>Motivo</Text>
+            <View style={theme.styles.pillWrap}>
+              {(['permission', 'meal', 'vacation', 'sick_leave', 'custom_schedule'] as EmployeeBlock['type'][]).map((type) => (
+                <Pill key={type} label={type} active={draft.type === type} onPress={() => setDraft({ ...draft, type })} />
+              ))}
+            </View>
+            <LabeledInput label="Nota" value={draft.note ?? ''} onChangeText={(note) => setDraft({ ...draft, note })} />
+            <View style={theme.styles.row}>
+              <SmallButton label="Cancelar" onPress={() => setDraft(null)} />
+              <SmallButton label="Guardar" onPress={onSave} />
+            </View>
           </View>
         ) : null}
       </View>
