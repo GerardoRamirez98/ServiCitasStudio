@@ -6,7 +6,7 @@ import { apiLogout } from '../services/api';
 import { getAppearancePalette, theme } from '../theme';
 import { BrandThemeProvider, useBrandColors } from '../theme-context';
 import { UserProfile, UserRole } from '../types';
-import { IconButton, SmallButton } from './ui';
+import { IconButton, Segmented } from './ui';
 
 const roleLabels: Record<UserRole, string> = {
   admin: 'Administrador',
@@ -59,9 +59,22 @@ function AppShellFrame({
               {profile.name} · {clientMode ? roleLabels.client : roleLabels[profile.role]}
             </Text>
           </View>
-          {onToggleMode ? <SmallButton label={clientMode ? 'Trabajo' : 'Cliente'} onPress={onToggleMode} /> : null}
           <IconButton icon="log-out-outline" onPress={() => apiLogout()} />
         </View>
+        {onToggleMode ? (
+          <View style={{ marginTop: 12 }}>
+            <Segmented
+              options={[
+                { key: 'work', label: 'Trabajo', icon: 'briefcase-outline' },
+                { key: 'client', label: 'Cliente', icon: 'person-outline' },
+              ]}
+              value={clientMode ? 'client' : 'work'}
+              onChange={(mode) => {
+                if ((mode === 'client') !== Boolean(clientMode)) onToggleMode();
+              }}
+            />
+          </View>
+        ) : null}
       </View>
       {children}
     </SafeAreaView>
