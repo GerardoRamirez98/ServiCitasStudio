@@ -1,4 +1,5 @@
 import { StatusBar } from 'expo-status-bar';
+import { useEffect, useState } from 'react';
 import { ActivityIndicator, Text } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { AppShell } from './src/components/AppShell';
@@ -19,6 +20,11 @@ export default function App() {
 
 function AppContent() {
   const { profile, loading } = useAuthProfile();
+  const [staffView, setStaffView] = useState(true);
+
+  useEffect(() => {
+    setStaffView(true);
+  }, [profile?.id]);
 
   if (loading) {
     return (
@@ -34,11 +40,14 @@ function AppContent() {
     return <AuthScreen />;
   }
 
+  const hasStaffView = profile.role !== 'client';
+  const clientMode = !hasStaffView || !staffView;
+
   return (
-    <AppShell profile={profile}>
-      {['owner', 'admin', 'manager', 'receptionist'].includes(profile.role) ? <AdminScreen profile={profile} /> : null}
-      {profile.role === 'employee' ? <EmployeeScreen profile={profile} /> : null}
-      {profile.role === 'client' ? <ClientScreen profile={profile} /> : null}
+    <AppShell profile={profile} clientMode={clientMode} onToggleMode={hasStaffView ? () => setStaffView((current) => !current) : undefined}>
+      {!clientMode && ['owner', 'admin', 'manager', 'receptionist'].includes(profile.role) ? <AdminScreen profile={profile} /> : null}
+      {!clientMode && profile.role === 'employee' ? <EmployeeScreen profile={profile} /> : null}
+      {clientMode ? <ClientScreen profile={profile} /> : null}
     </AppShell>
   );
 }

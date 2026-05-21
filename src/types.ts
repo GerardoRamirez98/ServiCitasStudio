@@ -10,6 +10,8 @@ export type UserProfile = {
   organizationId: string;
   organizationName: string;
   employeeId?: string;
+  clientOrganizationId?: string;
+  clientOrganizationName?: string;
 };
 
 export type Organization = {
@@ -236,6 +238,7 @@ export type Announcement = {
 export type BusinessSettings = {
   requireDeposit: boolean;
   depositPercent: number;
+  latePolicyEnabled: boolean;
   toleranceMinutes: number;
   cancellationLimitHours: number;
   businessStart: string;

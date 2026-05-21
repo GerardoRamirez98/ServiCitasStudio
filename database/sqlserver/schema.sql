@@ -39,6 +39,8 @@ CREATE TABLE dbo.Users (
   OrganizationId nvarchar(128) NOT NULL,
   OrganizationName nvarchar(200) NOT NULL,
   EmployeeId nvarchar(128) NULL,
+  ClientOrganizationId nvarchar(128) NULL,
+  ClientOrganizationName nvarchar(200) NULL,
   CreatedAt datetime2 NOT NULL CONSTRAINT DF_Users_CreatedAt DEFAULT sysutcdatetime(),
   UpdatedAt datetime2 NOT NULL CONSTRAINT DF_Users_UpdatedAt DEFAULT sysutcdatetime(),
   CONSTRAINT FK_Users_Organizations FOREIGN KEY (OrganizationId) REFERENCES dbo.Organizations(Id)
@@ -282,6 +284,7 @@ CREATE TABLE dbo.BusinessSettings (
   OrganizationId nvarchar(128) NOT NULL CONSTRAINT PK_BusinessSettings PRIMARY KEY,
   RequireDeposit bit NOT NULL,
   DepositPercent decimal(5, 2) NOT NULL,
+  LatePolicyEnabled bit NOT NULL CONSTRAINT DF_BusinessSettings_LatePolicyEnabled DEFAULT 0,
   ToleranceMinutes int NOT NULL,
   CancellationLimitHours int NOT NULL,
   BusinessStart time(0) NOT NULL,

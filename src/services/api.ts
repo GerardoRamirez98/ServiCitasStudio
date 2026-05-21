@@ -218,7 +218,7 @@ export async function apiSelectClientOrganization(organizationId: string) {
   return payload.profile;
 }
 
-export async function apiOrganizationBootstrap(organizationId: string) {
+export async function apiOrganizationBootstrap(organizationId: string, clientView = false) {
   return apiRequest<{
     organization: Record<string, unknown> | null;
     settings: Record<string, unknown> | null;
@@ -234,7 +234,7 @@ export async function apiOrganizationBootstrap(organizationId: string) {
     clientHistories: Record<string, unknown>[];
     employeeBlocks: Record<string, unknown>[];
     auditLogs: Record<string, unknown>[];
-  }>(`/organizations/${organizationId}/bootstrap`);
+  }>(`/organizations/${organizationId}/bootstrap${clientView ? '?clientView=1' : ''}`);
 }
 
 export async function apiSqlServerHealth() {

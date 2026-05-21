@@ -1512,7 +1512,22 @@ function SettingsForm({ settings, onChange, onSave }: { settings: BusinessSettin
         value={String(settings.depositPercent)}
         onChangeText={(value) => onChange({ ...settings, depositPercent: Number(value || 0) })}
       />
-      <LabeledInput label="Minutos de tolerancia" helper="Tiempo permitido antes de marcar una cita como perdida." keyboardType="numeric" value={String(settings.toleranceMinutes)} onChangeText={(value) => onChange({ ...settings, toleranceMinutes: Number(value || 0) })} />
+      <View style={theme.styles.card}>
+        <Text style={[theme.styles.eyebrow, { color: brandColors.primary }]}>Politica de tardanza</Text>
+        <Text style={theme.styles.mutedText}>Activa esta clausula solo si el negocio puede negar o marcar perdida la cita despues de la tolerancia.</Text>
+        <View style={theme.styles.pillWrap}>
+          <Pill label="Sin clausula" active={!settings.latePolicyEnabled} onPress={() => onChange({ ...settings, latePolicyEnabled: false })} />
+          <Pill label="Aplicar tolerancia" active={settings.latePolicyEnabled} onPress={() => onChange({ ...settings, latePolicyEnabled: true })} />
+        </View>
+      </View>
+      <LabeledInput
+        label="Minutos de tolerancia"
+        helper={settings.latePolicyEnabled ? 'Tiempo permitido antes de aplicar la clausula de tardanza.' : 'Se conserva para cuando actives la clausula.'}
+        keyboardType="numeric"
+        editable={settings.latePolicyEnabled}
+        value={String(settings.toleranceMinutes)}
+        onChangeText={(value) => onChange({ ...settings, toleranceMinutes: Number(value || 0) })}
+      />
       <LabeledInput
         label="Horas minimas para cancelar"
         helper="Ej. 24 significa que el cliente debe cancelar al menos un dia antes. El anticipo sigue siendo no reembolsable si ya fue pagado."
@@ -2586,7 +2601,7 @@ function EmployeeModal({ draft, setDraft, onSave }: { draft: Employee | null; se
             <ScrollView contentContainerStyle={{ gap: 12 }}>
             <Text style={theme.styles.title}>{draft.id ? 'Editar empleado' : 'Nuevo empleado'}</Text>
             <LabeledInput label="Nombre del empleado" placeholder="Ej. Karen" value={draft.name} onChangeText={(name) => setDraft({ ...draft, name })} />
-            <LabeledInput label="Correo para vincular login" helper="Debe coincidir con el correo que usara al registrarse." value={draft.email} autoCapitalize="none" keyboardType="email-address" onChangeText={(email) => setDraft({ ...draft, email })} />
+            <LabeledInput label="Correo para vincular login" helper="Si ya existe como admin o empleado en este negocio, se vincula a esta ficha. Si no, debe coincidir con su registro." value={draft.email} autoCapitalize="none" keyboardType="email-address" onChangeText={(email) => setDraft({ ...draft, email })} />
             <LabeledInput label="Puesto principal" placeholder="Ej. Barbera, estilista, recepcion" value={draft.role} onChangeText={(role) => setDraft({ ...draft, role })} />
             <Text style={theme.styles.sectionTitle}>Especialidades</Text>
             <View style={theme.styles.pillWrap}>

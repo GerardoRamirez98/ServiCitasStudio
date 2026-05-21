@@ -32,7 +32,8 @@ function getCancellationTiming(appointment: Appointment, cancellationLimitHours:
 }
 
 export function ClientScreen({ profile }: { profile: UserProfile }) {
-  const { serviceCategories, services, employees, appointments, dayNotes, announcements, portfolioItems, promotions, employeeBlocks, settings, appearance } = useOrganizationData(profile.organizationId);
+  const activeOrganizationId = profile.clientOrganizationId || profile.organizationId;
+  const { serviceCategories, services, employees, appointments, dayNotes, announcements, portfolioItems, promotions, employeeBlocks, settings, appearance } = useOrganizationData(activeOrganizationId, true);
   const brandColors = useBrandColors();
   const [selectedServiceIds, setSelectedServiceIds] = useState<string[]>([]);
   const [selectedDate, setSelectedDate] = useState(nextDates(14)[0]);
@@ -95,7 +96,7 @@ export function ClientScreen({ profile }: { profile: UserProfile }) {
         setFollowedOrganizations([]);
         setClientAppointments([]);
       });
-  }, [profile.organizationId]);
+  }, [activeOrganizationId]);
 
   function toggleService(id: string) {
     setSelectedServiceIds((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
@@ -140,7 +141,7 @@ export function ClientScreen({ profile }: { profile: UserProfile }) {
   }
 
   async function selectOrganization(organization: ClientOrganization) {
-    if (organization.id === profile.organizationId) return;
+    if (organization.id === activeOrganizationId) return;
     setOrganizationBusy(true);
     try {
       await apiSelectClientOrganization(organization.id);
@@ -153,7 +154,7 @@ export function ClientScreen({ profile }: { profile: UserProfile }) {
   async function cancelAppointment() {
     if (!cancelDraft) return;
     try {
-      await apiPatch(`/organizations/${profile.organizationId}/appointments/${cancelDraft.id}`, {
+      await apiPatch(`/organizations/${activeOrganizationId}/appointments/${cancelDraft.id}`, {
         status: 'cancelled',
         cancelledBy: 'client',
         cancellationReason: cancelReason.trim() || 'Cancelada por el cliente.',
@@ -188,7 +189,7 @@ export function ClientScreen({ profile }: { profile: UserProfile }) {
       return;
     }
     if (!acceptedTerms) {
-      Alert.alert('Terminos pendientes', 'Acepta la politica de puntualidad.');
+      Alert.alert('Terminos pendientes', 'Acepta las politicas del negocio para continuar.');
       return;
     }
     const assignedEmployee = availableEmployeesForSlot(activeEmployees, appointments, services, selectedDate, selectedTime, effectiveDuration, undefined, employeeBlocks, settings)[0];
@@ -202,7 +203,7 @@ export function ClientScreen({ profile }: { profile: UserProfile }) {
 
     try {
       const appointment = await createAppointment({
-        organizationId: profile.organizationId,
+        organizationId: activeOrganizationId,
         clientId: profile.id,
         clientName: profile.name,
         date: selectedDate,
@@ -221,7 +222,7 @@ export function ClientScreen({ profile }: { profile: UserProfile }) {
         source: 'client',
       });
       if (requiresDeposit && deposit > 0 && automaticPaymentsEnabled && !['transfer', 'cash'].includes(effectiveDepositPaymentMethod)) {
-        const preference = await createDepositPreference(profile.organizationId, appointment.appointmentId);
+        const preference = await createDepositPreference(activeOrganizationId, appointment.appointmentId);
         if (preference.checkoutUrl) {
           await Linking.openURL(preference.checkoutUrl);
         }
@@ -270,7 +271,7 @@ export function ClientScreen({ profile }: { profile: UserProfile }) {
               {organizationResults.map((organization) => (
                 <ClientOrganizationRow
                   key={organization.id}
-                  organization={organization}
+                  organization={{ ...organization, active: organization.id === activeOrganizationId }}
                   busy={organizationBusy}
                   onFollow={() => followOrganization(organization)}
                   onSelect={() => selectOrganization(organization)}
@@ -284,7 +285,7 @@ export function ClientScreen({ profile }: { profile: UserProfile }) {
             {followedOrganizations.map((organization) => (
               <ClientOrganizationRow
                 key={organization.id}
-                organization={organization}
+                organization={{ ...organization, active: organization.id === activeOrganizationId }}
                 busy={organizationBusy}
                 onFollow={() => followOrganization(organization)}
                 onSelect={() => selectOrganization(organization)}
@@ -461,7 +462,8 @@ export function ClientScreen({ profile }: { profile: UserProfile }) {
         <Pressable style={theme.styles.row} onPress={() => setAcceptedTerms(!acceptedTerms)}>
           <Ionicons name={acceptedTerms ? 'checkbox' : 'square-outline'} size={22} color={brandColors.primaryDark} />
           <Text style={[theme.styles.mutedText, theme.styles.grow]}>
-            Acepto que si llego despues de {settings.toleranceMinutes} minutos de tolerancia, la cita puede marcarse como perdida. Si cancelo una cita con anticipo pagado, el anticipo no sera devuelto y no podre exigir el servicio de esa cita.
+            {settings.latePolicyEnabled ? `Acepto que si llego despues de ${settings.toleranceMinutes} minutos de tolerancia, la cita puede marcarse como perdida. ` : ''}
+            Si cancelo una cita con anticipo pagado, el anticipo no sera devuelto y no podre exigir el servicio de esa cita.
           </Text>
         </Pressable>
         <PrimaryButton

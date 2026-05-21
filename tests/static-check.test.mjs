@@ -40,3 +40,13 @@ test('agenda valida horarios, permisos y paginacion', () => {
   assert.ok(server.includes("app.get('/organizations/:organizationId/appointments'"), 'falta paginacion de citas');
   assert.ok(server.includes('OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY'), 'falta consulta paginada');
 });
+
+test('modo cliente y politica de tardanza son configurables', () => {
+  const app = readFileSync('App.tsx', 'utf8');
+  const server = readFileSync('server/src/index.ts', 'utf8');
+  const client = readFileSync('src/screens/ClientScreen.tsx', 'utf8');
+  assert.ok(app.includes('clientMode'), 'falta modo cliente para cuentas staff');
+  assert.ok(server.includes('LatePolicyEnabled'), 'falta clausula de tardanza por negocio');
+  assert.ok(client.includes('settings.latePolicyEnabled'), 'cliente no respeta clausula de tardanza');
+  assert.ok(server.includes('SET EmployeeId = @id'), 'admin no se vincula como empleado');
+});

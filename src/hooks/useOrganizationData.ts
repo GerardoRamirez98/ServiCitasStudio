@@ -7,6 +7,7 @@ import { AuditLog, Announcement, AppearanceSettings, Appointment, BusinessSettin
 export const defaultSettings: BusinessSettings = {
   requireDeposit: false,
   depositPercent: 30,
+  latePolicyEnabled: false,
   toleranceMinutes: 10,
   cancellationLimitHours: 24,
   businessStart: '09:00',
@@ -26,7 +27,7 @@ function parseJson<T>(value: unknown, fallback: T) {
   }
 }
 
-export function useOrganizationData(organizationId: string) {
+export function useOrganizationData(organizationId: string, clientView = false) {
   const [services, setServices] = useState<Service[]>([]);
   const [serviceCategories, setServiceCategories] = useState<ServiceCategory[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -48,7 +49,7 @@ export function useOrganizationData(organizationId: string) {
     if (!organizationId) return;
     setError(null);
 
-    await apiOrganizationBootstrap(organizationId)
+    await apiOrganizationBootstrap(organizationId, clientView)
       .then((data) => {
         if (!mounted()) return;
         const org = data.organization;
@@ -213,6 +214,7 @@ export function useOrganizationData(organizationId: string) {
           setSettings({
             requireDeposit: Boolean(apiSettings.RequireDeposit),
             depositPercent: Number(apiSettings.DepositPercent ?? 30),
+            latePolicyEnabled: Boolean(apiSettings.LatePolicyEnabled),
             toleranceMinutes: Number(apiSettings.ToleranceMinutes ?? 10),
             cancellationLimitHours: Number(apiSettings.CancellationLimitHours ?? 24),
             businessStart: String(apiSettings.BusinessStart ?? '09:00').slice(0, 5),
@@ -238,7 +240,7 @@ export function useOrganizationData(organizationId: string) {
       .catch((apiError) => {
         if (mounted()) setError(apiError instanceof Error ? apiError.message : 'No se pudo cargar la informacion.');
       });
-  }, [organizationId]);
+  }, [clientView, organizationId]);
 
   useEffect(() => {
     if (!organizationId) return undefined;

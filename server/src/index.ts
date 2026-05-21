@@ -163,15 +163,9 @@ function userRowToProfile(row: Record<string, unknown>) {
     organizationId: String(row.OrganizationId),
     organizationName: String(row.OrganizationName),
     employeeId: row.EmployeeId ? String(row.EmployeeId) : undefined,
+    clientOrganizationId: row.ClientOrganizationId ? String(row.ClientOrganizationId) : undefined,
+    clientOrganizationName: row.ClientOrganizationName ? String(row.ClientOrganizationName) : undefined,
   };
-}
-
-function assertClient(req: express.Request, res: express.Response) {
-  if (req.user?.role !== 'client') {
-    res.status(403).json({ message: 'Esta seccion es solo para clientes.' });
-    return false;
-  }
-  return true;
 }
 
 function organizationLocation(addressJson: unknown) {
@@ -252,6 +246,10 @@ async function ensureDatabaseShape() {
   await pool.request().query(`
     IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_Users_Email')
       CREATE UNIQUE INDEX UX_Users_Email ON dbo.Users(Email);
+    IF COL_LENGTH('dbo.Users', 'ClientOrganizationId') IS NULL
+      ALTER TABLE dbo.Users ADD ClientOrganizationId nvarchar(128) NULL;
+    IF COL_LENGTH('dbo.Users', 'ClientOrganizationName') IS NULL
+      ALTER TABLE dbo.Users ADD ClientOrganizationName nvarchar(200) NULL;
 
     IF COL_LENGTH('dbo.Appointments', 'RequestedDepositPaymentMethod') IS NULL
       ALTER TABLE dbo.Appointments ADD RequestedDepositPaymentMethod nvarchar(40) NULL;
@@ -291,6 +289,8 @@ async function ensureDatabaseShape() {
       ALTER TABLE dbo.Employees ADD ScheduleOverridesJson nvarchar(max) NULL;
     IF COL_LENGTH('dbo.Announcements', 'Audience') IS NULL
       ALTER TABLE dbo.Announcements ADD Audience nvarchar(40) NOT NULL CONSTRAINT DF_Announcements_Audience DEFAULT 'all';
+    IF COL_LENGTH('dbo.BusinessSettings', 'LatePolicyEnabled') IS NULL
+      ALTER TABLE dbo.BusinessSettings ADD LatePolicyEnabled bit NOT NULL CONSTRAINT DF_BusinessSettings_LatePolicyEnabled DEFAULT 0;
 
     IF OBJECT_ID('dbo.ServiceCategories', 'U') IS NULL
       CREATE TABLE dbo.ServiceCategories (
@@ -400,6 +400,30 @@ async function ensureDatabaseShape() {
         SELECT 1 FROM dbo.ClientOrganizations co
         WHERE co.ClientId = u.Id AND co.OrganizationId = u.OrganizationId
       );
+    EXEC('
+      UPDATE u
+      SET ClientOrganizationId = COALESCE(u.ClientOrganizationId, u.OrganizationId),
+        ClientOrganizationName = COALESCE(u.ClientOrganizationName, u.OrganizationName)
+      FROM dbo.Users u
+      WHERE u.Role = ''client'';
+    ');
+
+    UPDATE e
+    SET UserId = u.Id, UpdatedAt = sysutcdatetime()
+    FROM dbo.Employees e
+    INNER JOIN dbo.Users u
+      ON u.OrganizationId = e.OrganizationId
+      AND u.Email = e.Email
+      AND u.Role IN ('owner', 'admin', 'manager', 'receptionist', 'employee')
+      AND (u.EmployeeId IS NULL OR u.EmployeeId = e.Id)
+    WHERE e.UserId IS NULL
+      AND NULLIF(e.Email, '') IS NOT NULL;
+
+    UPDATE u
+    SET EmployeeId = e.Id, UpdatedAt = sysutcdatetime()
+    FROM dbo.Users u
+    INNER JOIN dbo.Employees e ON e.UserId = u.Id
+    WHERE u.EmployeeId IS NULL;
   `);
 }
 
@@ -538,9 +562,11 @@ app.post('/auth/register', async (req, res) => {
       .input('organizationId', sql.NVarChar, organizationId)
       .input('organizationName', sql.NVarChar, finalOrganizationName)
       .input('employeeId', sql.NVarChar, employeeId)
+      .input('clientOrganizationId', sql.NVarChar, finalRole === 'client' ? organizationId : null)
+      .input('clientOrganizationName', sql.NVarChar, finalRole === 'client' ? finalOrganizationName : null)
       .query(`
-        INSERT INTO dbo.Users (Id, Name, Email, PasswordHash, Role, OrganizationId, OrganizationName, EmployeeId)
-        VALUES (@id, @name, @email, @passwordHash, @role, @organizationId, @organizationName, @employeeId)
+        INSERT INTO dbo.Users (Id, Name, Email, PasswordHash, Role, OrganizationId, OrganizationName, EmployeeId, ClientOrganizationId, ClientOrganizationName)
+        VALUES (@id, @name, @email, @passwordHash, @role, @organizationId, @organizationName, @employeeId, @clientOrganizationId, @clientOrganizationName)
       `);
 
     if (employeeId) {
@@ -589,24 +615,24 @@ app.get('/auth/me', requireAuth, async (req, res) => {
 });
 
 app.get('/clients/organizations', requireAuth, async (req, res) => {
-  if (!assertClient(req, res)) return;
   const pool = await getPool();
   const result = await pool.request()
     .input('clientId', sql.NVarChar, req.user?.id)
-    .input('activeOrganizationId', sql.NVarChar, req.user?.organizationId)
     .query(`
-      SELECT o.Id, o.Name, o.PublicCode, o.AddressJson, co.LastSelectedAt
+      SELECT o.Id, o.Name, o.PublicCode, o.AddressJson, co.LastSelectedAt,
+        COALESCE(u.ClientOrganizationId, u.OrganizationId) AS ActiveOrganizationId
       FROM dbo.ClientOrganizations co
       INNER JOIN dbo.Organizations o ON o.Id = co.OrganizationId
+      INNER JOIN dbo.Users u ON u.Id = co.ClientId
       WHERE co.ClientId = @clientId
-      ORDER BY CASE WHEN o.Id = @activeOrganizationId THEN 0 ELSE 1 END, co.LastSelectedAt DESC, o.Name
+      ORDER BY CASE WHEN o.Id = COALESCE(u.ClientOrganizationId, u.OrganizationId) THEN 0 ELSE 1 END, co.LastSelectedAt DESC, o.Name
     `);
   res.json({
     organizations: result.recordset.map((organization) => ({
       id: String(organization.Id),
       name: String(organization.Name),
       publicCode: organization.PublicCode ? String(organization.PublicCode) : undefined,
-      active: String(organization.Id) === req.user?.organizationId,
+      active: String(organization.Id) === String(organization.ActiveOrganizationId),
       followed: true,
       ...organizationLocation(organization.AddressJson),
     })),
@@ -614,7 +640,6 @@ app.get('/clients/organizations', requireAuth, async (req, res) => {
 });
 
 app.get('/clients/organizations/search', requireAuth, async (req, res) => {
-  if (!assertClient(req, res)) return;
   const query = stringValue(req.query.query);
   const code = normalizeCode(query);
   if (query.length < 2 && code.length < 4) {
@@ -628,8 +653,10 @@ app.get('/clients/organizations/search', requireAuth, async (req, res) => {
     .input('code', sql.NVarChar, code)
     .query(`
       SELECT TOP 20 o.Id, o.Name, o.PublicCode, o.AddressJson,
-        CASE WHEN co.ClientId IS NULL THEN 0 ELSE 1 END AS Followed
+        CASE WHEN co.ClientId IS NULL THEN 0 ELSE 1 END AS Followed,
+        COALESCE(u.ClientOrganizationId, u.OrganizationId) AS ActiveOrganizationId
       FROM dbo.Organizations o
+      INNER JOIN dbo.Users u ON u.Id = @clientId
       LEFT JOIN dbo.ClientOrganizations co ON co.OrganizationId = o.Id AND co.ClientId = @clientId
       WHERE o.PublicCode = @code OR o.Name LIKE @query OR o.Slug LIKE @query
       ORDER BY CASE WHEN o.PublicCode = @code THEN 0 ELSE 1 END, o.Name
@@ -639,7 +666,7 @@ app.get('/clients/organizations/search', requireAuth, async (req, res) => {
       id: String(organization.Id),
       name: String(organization.Name),
       publicCode: organization.PublicCode ? String(organization.PublicCode) : undefined,
-      active: String(organization.Id) === req.user?.organizationId,
+      active: String(organization.Id) === String(organization.ActiveOrganizationId),
       followed: Boolean(organization.Followed),
       ...organizationLocation(organization.AddressJson),
     })),
@@ -647,7 +674,6 @@ app.get('/clients/organizations/search', requireAuth, async (req, res) => {
 });
 
 app.get('/clients/appointments', requireAuth, async (req, res) => {
-  if (!assertClient(req, res)) return;
   const pool = await getPool();
   const result = await pool.request()
     .input('clientId', sql.NVarChar, req.user?.id)
@@ -673,7 +699,6 @@ app.get('/clients/appointments', requireAuth, async (req, res) => {
 });
 
 app.post('/clients/organizations', requireAuth, async (req, res) => {
-  if (!assertClient(req, res)) return;
   const publicCode = normalizeCode(req.body.publicCode);
   if (!publicCode) {
     res.status(400).json({ message: 'Ingresa el codigo publico del negocio.' });
@@ -708,7 +733,6 @@ app.post('/clients/organizations', requireAuth, async (req, res) => {
 });
 
 app.post('/clients/organizations/:organizationId/select', requireAuth, async (req, res) => {
-  if (!assertClient(req, res)) return;
   const pool = await getPool();
   const organization = await pool.request()
     .input('clientId', sql.NVarChar, req.user?.id)
@@ -730,8 +754,8 @@ app.post('/clients/organizations/:organizationId/select', requireAuth, async (re
     .input('organizationName', sql.NVarChar, row.Name)
     .query(`
       UPDATE dbo.Users
-      SET OrganizationId = @organizationId, OrganizationName = @organizationName, UpdatedAt = sysutcdatetime()
-      WHERE Id = @clientId AND Role = 'client';
+      SET ClientOrganizationId = @organizationId, ClientOrganizationName = @organizationName, UpdatedAt = sysutcdatetime()
+      WHERE Id = @clientId;
       UPDATE dbo.ClientOrganizations
       SET LastSelectedAt = sysutcdatetime()
       WHERE ClientId = @clientId AND OrganizationId = @organizationId;
@@ -744,19 +768,27 @@ app.post('/clients/organizations/:organizationId/select', requireAuth, async (re
 });
 
 app.get('/organizations/:id/bootstrap', requireAuth, async (req, res) => {
-  if (req.user?.organizationId !== req.params.id) {
+  const clientView = String(req.query.clientView ?? '') === '1';
+  const pool = await getPool();
+  const clientAccess = clientView && req.user?.id
+    ? await pool.request()
+      .input('clientId', sql.NVarChar, req.user.id)
+      .input('organizationId', sql.NVarChar, req.params.id)
+      .query('SELECT TOP 1 OrganizationId FROM dbo.ClientOrganizations WHERE ClientId = @clientId AND OrganizationId = @organizationId')
+    : null;
+  if (req.user?.organizationId !== req.params.id && !clientAccess?.recordset.length) {
     res.status(403).json({ message: 'No tienes acceso a este negocio.' });
     return;
   }
-  const pool = await getPool();
+  const safeClientView = clientView || req.user?.role === 'client';
   const organization = await pool.request().input('id', sql.NVarChar, req.params.id).query('SELECT * FROM dbo.Organizations WHERE Id = @id');
   const settings = await pool.request().input('id', sql.NVarChar, req.params.id).query('SELECT * FROM dbo.BusinessSettings WHERE OrganizationId = @id');
   const appearance = await pool.request().input('id', sql.NVarChar, req.params.id).query('SELECT * FROM dbo.AppearanceSettings WHERE OrganizationId = @id');
   const serviceCategories = await pool.request().input('id', sql.NVarChar, req.params.id).query('SELECT * FROM dbo.ServiceCategories WHERE OrganizationId = @id ORDER BY SortOrder, Name');
   const services = await pool.request().input('id', sql.NVarChar, req.params.id).query('SELECT * FROM dbo.Services WHERE OrganizationId = @id ORDER BY Name');
   const employees = await pool.request().input('id', sql.NVarChar, req.params.id).query('SELECT * FROM dbo.Employees WHERE OrganizationId = @id ORDER BY Name');
-  const appointments = req.user?.role === 'client'
-    ? await pool.request().input('id', sql.NVarChar, req.params.id).input('clientId', sql.NVarChar, req.user.id).query('SELECT TOP 250 * FROM dbo.Appointments WHERE OrganizationId = @id AND ClientId = @clientId ORDER BY AppointmentDate DESC, AppointmentTime DESC')
+  const appointments = safeClientView
+    ? await pool.request().input('id', sql.NVarChar, req.params.id).input('clientId', sql.NVarChar, req.user?.id).query('SELECT TOP 250 * FROM dbo.Appointments WHERE OrganizationId = @id AND ClientId = @clientId ORDER BY AppointmentDate DESC, AppointmentTime DESC')
     : req.user?.role === 'employee'
       ? await pool.request().input('id', sql.NVarChar, req.params.id).input('userId', sql.NVarChar, req.user.id).query(`
         SELECT TOP 250 a.*
@@ -783,12 +815,12 @@ app.get('/organizations/:id/bootstrap', requireAuth, async (req, res) => {
     employees: employees.recordset,
     appointments: appointments.recordset,
     dayNotes: dayNotes.recordset,
-    announcements: req.user?.role === 'client' ? announcements.recordset.filter((announcement) => ['clients', 'all'].includes(String(announcement.Audience ?? 'all'))) : announcements.recordset,
+    announcements: safeClientView ? announcements.recordset.filter((announcement) => ['clients', 'all'].includes(String(announcement.Audience ?? 'all'))) : announcements.recordset,
     portfolioItems: portfolioItems.recordset,
     promotions: promotions.recordset,
-    clientHistories: isStaff(req) ? clientHistories.recordset : [],
-    employeeBlocks: isStaff(req) ? employeeBlocks.recordset : [],
-    auditLogs: req.user?.role && adminRoles.includes(req.user.role) ? auditLogs.recordset : [],
+    clientHistories: !safeClientView && isStaff(req) ? clientHistories.recordset : [],
+    employeeBlocks: !safeClientView && isStaff(req) ? employeeBlocks.recordset : [],
+    auditLogs: !safeClientView && req.user?.role && adminRoles.includes(req.user.role) ? auditLogs.recordset : [],
   });
 });
 
@@ -942,6 +974,7 @@ app.put('/organizations/:organizationId/settings/business', requireAuth, async (
     .input('organizationId', sql.NVarChar, req.params.organizationId)
     .input('requireDeposit', sql.Bit, Boolean(req.body.requireDeposit))
     .input('depositPercent', sql.Decimal(5, 2), Number(req.body.depositPercent ?? 0))
+    .input('latePolicyEnabled', sql.Bit, Boolean(req.body.latePolicyEnabled))
     .input('toleranceMinutes', sql.Int, Number(req.body.toleranceMinutes ?? 0))
     .input('cancellationLimitHours', sql.Int, Number(req.body.cancellationLimitHours ?? 0))
     .input('businessStart', sql.NVarChar, String(req.body.businessStart ?? '09:00'))
@@ -956,13 +989,13 @@ app.put('/organizations/:organizationId/settings/business', requireAuth, async (
       USING (SELECT @organizationId AS OrganizationId) AS source
       ON target.OrganizationId = source.OrganizationId
       WHEN MATCHED THEN UPDATE SET
-        RequireDeposit = @requireDeposit, DepositPercent = @depositPercent, ToleranceMinutes = @toleranceMinutes,
+        RequireDeposit = @requireDeposit, DepositPercent = @depositPercent, LatePolicyEnabled = @latePolicyEnabled, ToleranceMinutes = @toleranceMinutes,
         CancellationLimitHours = @cancellationLimitHours, BusinessStart = @businessStart, BusinessEnd = @businessEnd,
         BreakEnabled = @breakEnabled, BreakStart = @breakStart, BreakEnd = @breakEnd, SlotMinutes = @slotMinutes,
         WorkingDaysJson = @workingDaysJson, UpdatedAt = sysutcdatetime()
       WHEN NOT MATCHED THEN INSERT
-        (OrganizationId, RequireDeposit, DepositPercent, ToleranceMinutes, CancellationLimitHours, BusinessStart, BusinessEnd, BreakEnabled, BreakStart, BreakEnd, SlotMinutes, WorkingDaysJson)
-        VALUES (@organizationId, @requireDeposit, @depositPercent, @toleranceMinutes, @cancellationLimitHours, @businessStart, @businessEnd, @breakEnabled, @breakStart, @breakEnd, @slotMinutes, @workingDaysJson);
+        (OrganizationId, RequireDeposit, DepositPercent, LatePolicyEnabled, ToleranceMinutes, CancellationLimitHours, BusinessStart, BusinessEnd, BreakEnabled, BreakStart, BreakEnd, SlotMinutes, WorkingDaysJson)
+        VALUES (@organizationId, @requireDeposit, @depositPercent, @latePolicyEnabled, @toleranceMinutes, @cancellationLimitHours, @businessStart, @businessEnd, @breakEnabled, @breakStart, @breakEnd, @slotMinutes, @workingDaysJson);
     `);
   res.json({ ok: true });
 });
@@ -1372,8 +1405,23 @@ app.post('/organizations/:organizationId/employees', requireAuth, async (req, re
     .input('serviceDurationsJson', sql.NVarChar, JSON.stringify(req.body.serviceDurations ?? {}))
     .input('scheduleOverridesJson', sql.NVarChar, JSON.stringify(req.body.scheduleOverrides ?? {}))
     .query(`
-      INSERT INTO dbo.Employees (Id, OrganizationId, Name, Email, Role, SpecialtiesJson, Active, InviteCode, CompensationMode, FixedSalary, CommissionPercent, ServiceDurationsJson, ScheduleOverridesJson)
-      VALUES (@id, @organizationId, @name, @email, @role, @specialtiesJson, @active, @inviteCode, @compensationMode, @fixedSalary, @commissionPercent, @serviceDurationsJson, @scheduleOverridesJson)
+      DECLARE @linkedUserId nvarchar(128) = (
+        SELECT TOP 1 Id
+        FROM dbo.Users
+        WHERE OrganizationId = @organizationId
+          AND Email = @email
+          AND Role IN ('owner', 'admin', 'manager', 'receptionist', 'employee')
+          AND (EmployeeId IS NULL OR EmployeeId = @id)
+        ORDER BY CreatedAt
+      );
+
+      INSERT INTO dbo.Employees (Id, OrganizationId, UserId, Name, Email, Role, SpecialtiesJson, Active, InviteCode, CompensationMode, FixedSalary, CommissionPercent, ServiceDurationsJson, ScheduleOverridesJson)
+      VALUES (@id, @organizationId, @linkedUserId, @name, @email, @role, @specialtiesJson, @active, @inviteCode, @compensationMode, @fixedSalary, @commissionPercent, @serviceDurationsJson, @scheduleOverridesJson);
+
+      IF @linkedUserId IS NOT NULL
+        UPDATE dbo.Users
+        SET EmployeeId = @id, UpdatedAt = sysutcdatetime()
+        WHERE Id = @linkedUserId;
     `);
   res.status(201).json({ id: employeeId, inviteCode });
 });
@@ -1396,10 +1444,25 @@ app.put('/organizations/:organizationId/employees/:employeeId', requireAuth, asy
     .input('serviceDurationsJson', sql.NVarChar, JSON.stringify(req.body.serviceDurations ?? {}))
     .input('scheduleOverridesJson', sql.NVarChar, JSON.stringify(req.body.scheduleOverrides ?? {}))
     .query(`
-      UPDATE dbo.Employees SET Name = @name, Email = @email, Role = @role, SpecialtiesJson = @specialtiesJson, Active = @active, InviteCode = @inviteCode,
+      DECLARE @linkedUserId nvarchar(128) = (
+        SELECT TOP 1 Id
+        FROM dbo.Users
+        WHERE OrganizationId = @organizationId
+          AND Email = @email
+          AND Role IN ('owner', 'admin', 'manager', 'receptionist', 'employee')
+          AND (EmployeeId IS NULL OR EmployeeId = @id)
+        ORDER BY CreatedAt
+      );
+
+      UPDATE dbo.Employees SET UserId = COALESCE(@linkedUserId, UserId), Name = @name, Email = @email, Role = @role, SpecialtiesJson = @specialtiesJson, Active = @active, InviteCode = @inviteCode,
         CompensationMode = @compensationMode, FixedSalary = @fixedSalary, CommissionPercent = @commissionPercent,
         ServiceDurationsJson = @serviceDurationsJson, ScheduleOverridesJson = @scheduleOverridesJson, UpdatedAt = sysutcdatetime()
-      WHERE Id = @id AND OrganizationId = @organizationId
+      WHERE Id = @id AND OrganizationId = @organizationId;
+
+      IF @linkedUserId IS NOT NULL
+        UPDATE dbo.Users
+        SET EmployeeId = @id, UpdatedAt = sysutcdatetime()
+        WHERE Id = @linkedUserId;
     `);
   res.json({ ok: true });
 });
@@ -1430,17 +1493,28 @@ app.delete('/organizations/:organizationId/employees/:employeeId', requireAuth, 
 });
 
 app.post('/organizations/:organizationId/appointments', requireAuth, async (req, res) => {
-  if (!assertSameOrg(req, res)) return;
   const appointmentId = id();
   const organizationId = paramValue(req.params.organizationId);
   const source = enumValue(req.body.source, ['client', 'manual'] as const, 'client');
+  const pool = await getPool();
   if (source === 'manual' && !isStaff(req)) {
     res.status(403).json({ message: 'Solo el personal puede crear citas manuales.' });
     return;
   }
-  if (source === 'client' && req.user?.role === 'client' && String(req.body.clientId ?? req.user.id) !== req.user.id) {
+  if (source === 'manual' && !assertSameOrg(req, res)) return;
+  if (source === 'client' && String(req.body.clientId ?? req.user?.id) !== req.user?.id) {
     res.status(403).json({ message: 'No puedes agendar a nombre de otro cliente.' });
     return;
+  }
+  if (source === 'client' && req.user?.organizationId !== organizationId) {
+    const followedOrganization = await pool.request()
+      .input('clientId', sql.NVarChar, req.user?.id)
+      .input('organizationId', sql.NVarChar, organizationId)
+      .query('SELECT TOP 1 OrganizationId FROM dbo.ClientOrganizations WHERE ClientId = @clientId AND OrganizationId = @organizationId');
+    if (!followedOrganization.recordset.length) {
+      res.status(403).json({ message: 'Primero sigue ese negocio para agendar ahi.' });
+      return;
+    }
   }
 
   const serviceIds = parseJsonArray(req.body.serviceIds).map(String).filter(Boolean);
@@ -1453,7 +1527,6 @@ app.post('/organizations/:organizationId/appointments', requireAuth, async (req,
     return;
   }
 
-  const pool = await getPool();
   const services = await pool
     .request()
     .input('organizationId', sql.NVarChar, organizationId)
@@ -1606,12 +1679,20 @@ app.post('/organizations/:organizationId/appointments', requireAuth, async (req,
       WHEN NOT MATCHED THEN INSERT (OrganizationId, ClientId, ClientName, TotalAppointments)
         VALUES (@organizationId, @clientId, @clientName, 1);
     `);
+  if (source === 'client') {
+    await pool.request()
+      .input('clientId', sql.NVarChar, req.user?.id)
+      .input('organizationId', sql.NVarChar, organizationId)
+      .query(`
+        IF NOT EXISTS (SELECT 1 FROM dbo.ClientOrganizations WHERE ClientId = @clientId AND OrganizationId = @organizationId)
+          INSERT INTO dbo.ClientOrganizations (ClientId, OrganizationId, LastSelectedAt) VALUES (@clientId, @organizationId, sysutcdatetime());
+      `);
+  }
   await writeAudit(organizationId, req, 'create', 'appointment', appointmentId, { clientName: req.body.clientName, date, time });
   res.status(201).json({ appointmentId, employeeId });
 });
 
 app.patch('/organizations/:organizationId/appointments/:appointmentId', requireAuth, async (req, res) => {
-  if (!assertSameOrg(req, res)) return;
   const pool = await getPool();
   const current = await pool.request().input('id', sql.NVarChar, req.params.appointmentId).input('organizationId', sql.NVarChar, req.params.organizationId).query('SELECT * FROM dbo.Appointments WHERE Id = @id AND OrganizationId = @organizationId');
   if (!current.recordset.length) {
@@ -1625,7 +1706,8 @@ app.patch('/organizations/:organizationId/appointments/:appointmentId', requireA
   const nextTime = stringValue(req.body.time ?? String(row.AppointmentTime).slice(0, 5));
   const nextServiceIds = req.body.serviceIds ? parseJsonArray(req.body.serviceIds).map(String).filter(Boolean) : parseJsonArray(row.ServiceIdsJson).map(String);
   const nextDuration = req.body.duration == null ? appointmentDuration(row) : numberValue(req.body.duration, appointmentDuration(row));
-  if (!isStaff(req)) {
+  const staffInOrganization = req.user?.organizationId === req.params.organizationId && isStaff(req);
+  if (!staffInOrganization) {
     const isOwnAppointment = String(row.ClientId) === req.user?.id;
     const clientOnlyCancellation = isOwnAppointment && nextStatus === 'cancelled';
     if (!clientOnlyCancellation) {
@@ -1633,7 +1715,7 @@ app.patch('/organizations/:organizationId/appointments/:appointmentId', requireA
       return;
     }
   }
-  if (req.user?.role === 'employee') {
+  if (staffInOrganization && req.user?.role === 'employee') {
     const employee = await pool.request()
       .input('userId', sql.NVarChar, req.user.id)
       .input('organizationId', sql.NVarChar, req.params.organizationId)
